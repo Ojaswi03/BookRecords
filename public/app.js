@@ -142,15 +142,34 @@ function pdfStatus(b) {
   return b.pdfNote || "No free legal copy checked yet.";
 }
 
+function openPdfViewer(b, url) {
+  $("#pdfTitle").textContent = b.title || "PDF";
+  $("#pdfOpen").href = url;
+  $("#pdfModal").classList.remove("hidden");
+  $("#pdfFrame").src = url;
+}
+
+// Clearing the frame releases the PDF the browser was holding in memory.
+function closePdfViewer() {
+  const frame = $("#pdfFrame");
+  if (frame) frame.src = "about:blank";
+  const modal = $("#pdfModal");
+  if (modal) modal.classList.add("hidden");
+}
+
 function readPDF(b) {
   const url = pdfHref(b);
   if (!url) return;
   const bridge = window.ShelfApp;
+  if (bridge && typeof bridge.openPdf === "function") {
+    bridge.openPdf(url, b.id, b.title || "");
+    return;
+  }
   if (bridge && typeof bridge.openExternal === "function") {
     bridge.openExternal(url);
     return;
   }
-  window.open(url, "_blank", "noopener");
+  openPdfViewer(b, url);
 }
 
 async function findPDF(id) {
@@ -1247,6 +1266,7 @@ $("#manualForm").addEventListener("submit", async (e) => {
 
 $("#dataBtn").addEventListener("click", openData);
 $("#dataClose").addEventListener("click", () => $("#dataModal").classList.add("hidden"));
+$("#pdfClose").addEventListener("click", closePdfViewer);
 $("#exportJson").addEventListener("click", () => saveFile(`shelfscout-${stamp()}.json`, booksToJSON(), "application/json"));
 $("#exportCsv").addEventListener("click", () => saveFile(`shelfscout-${stamp()}.csv`, booksToCSV(), "text/csv"));
 $("#importFile").addEventListener("change", (e) => {
@@ -1277,8 +1297,16 @@ $("#library").addEventListener("click", async (e) => {
     if (!window.confirm(`Remove "${book ? book.title : "this book"}" from the library?`)) return;
     try {
       await api(`/api/books/${id}`, { method: "DELETE" });
+      // Drop everything this device kept for the book.
+      if (book && window.CoverCache) CoverCache.forget(book.cover);
+      if (window.ShelfApp && typeof window.ShelfApp.deleteBookData === "function") {
+        window.ShelfApp.deleteBookData(id);
+      }
+      closePdfViewer();
+      if (state.detailId === id) closeDetail();
       state.books = (await api("/api/books")).books;
       if (state.banner && state.banner.id === id) state.banner = null;
+      if (state.highlightId === id) state.highlightId = null;
       render();
     } catch (err) {
       toast(err.message, true);
@@ -1333,6 +1361,7 @@ document.addEventListener("keydown", (e) => {
   closeScanner();
   $("#manualModal").classList.add("hidden");
   $("#dataModal").classList.add("hidden");
+  closePdfViewer();
 });
 
 let installPrompt = null;

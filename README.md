@@ -81,7 +81,9 @@ Covers are cached on each device after they first load, so the shelf still shows
 
 When a book is added, ShelfScout looks for a free, legal copy: public-domain scans on Internet Archive and PDFs published by Project Gutenberg. A public-domain PDF is downloaded once into `data/pdfs/` and served with the app, and the book gets a PDF badge. Books with no free copy say so in the book view; borrowable or paid titles are never downloaded, and copyrighted copies on file-sharing sites are not searched for.
 
-Tapping a book opens its cover, with **Read PDF** (only when a copy exists) and **Edit info**. For a book added before this feature, use **Find a free PDF** to try again.
+Tapping a book opens its cover, with **Read PDF** (only when a copy exists) and **Edit info**. On Android the PDF opens in ShelfScout's own full-screen reader; in a browser or the desktop app it opens in an overlay inside the app. For a book added before this feature, use **Find a free PDF** to try again.
+
+Deleting a book removes its PDF from `data/pdfs/`, its cached copy on each device, its cached cover and the book's entries in the automatic backups.
 
 ## Refreshing
 

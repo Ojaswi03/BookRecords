@@ -507,6 +507,23 @@ public class MainActivity extends Activity {
       }
     }
 
+    /** Opens the PDF in ShelfScout's own reader. */
+    @JavascriptInterface
+    public void openPdf(String url, String bookId, String title) {
+      if (url == null || !(url.startsWith("http://") || url.startsWith("https://"))) return;
+      Intent intent = new Intent(MainActivity.this, PdfActivity.class);
+      intent.putExtra(PdfActivity.EXTRA_URL, url);
+      intent.putExtra(PdfActivity.EXTRA_BOOK, bookId == null ? "" : bookId);
+      intent.putExtra(PdfActivity.EXTRA_TITLE, title == null ? "" : title);
+      startActivity(intent);
+    }
+
+    /** Drops cached files that belong to a deleted book. */
+    @JavascriptInterface
+    public void deleteBookData(String bookId) {
+      PdfActivity.deleteCache(MainActivity.this, bookId);
+    }
+
     /** Opens a PDF, or any other link, in the phone's browser or reader. */
     @JavascriptInterface
     public void openExternal(String url) {

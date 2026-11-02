@@ -506,6 +506,28 @@ function removePDF(file) {
   }
 }
 
+// A deleted book should not linger in the automatic backup snapshots either.
+function purgeFromBackups(bookId) {
+  try {
+    const dir = path.join(DATA_DIR, "backups");
+    if (!fs.existsSync(dir)) return;
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.startsWith("library-") || !name.endsWith(".json")) continue;
+      const file = path.join(dir, name);
+      try {
+        const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+        if (!Array.isArray(parsed)) continue;
+        const next = parsed.filter((b) => !b || b.id !== bookId);
+        if (next.length !== parsed.length) fs.writeFileSync(file, JSON.stringify(next, null, 2));
+      } catch {
+        /* skip a broken snapshot */
+      }
+    }
+  } catch {
+    /* no backups yet */
+  }
+}
+
 async function downloadPDF(url, file) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 60000);
@@ -1106,6 +1128,7 @@ async function handleAPI(req, res, pathname) {
     if (next.length === books.length) return sendJSON(res, 404, { error: "Book not found." });
     saveBooks(next);
     removePDF(removed && removed.pdf);
+    purgeFromBackups(idMatch[1]);
     broadcast("library", { reason: "removed", id: idMatch[1], origin });
     return sendJSON(res, 200, { ok: true });
   }

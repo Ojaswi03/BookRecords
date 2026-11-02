@@ -119,6 +119,20 @@ window.CoverCache = (function () {
     });
   }
 
+  // Delete one cover when its book is removed from the library.
+  async function forget(url) {
+    if (!url) return;
+    mem.delete(url);
+    try {
+      const db = await open();
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).delete(url);
+      await done(tx);
+    } catch {
+      /* the in-memory entry is already gone */
+    }
+  }
+
   async function remember(url) {
     if (!url || String(url).startsWith("data:") || mem.has(url) || failed.has(url)) return;
     try {
@@ -146,5 +160,5 @@ window.CoverCache = (function () {
     await Promise.all([worker(), worker(), worker(), worker()]);
   }
 
-  return { load, src, remember, warm };
+  return { load, src, remember, warm, forget };
 })();

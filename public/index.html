@@ -166,6 +166,19 @@
     </div>
   </div>
 
+  <!-- PDF reader overlay for the browser and desktop app. On Android the PDF
+       opens in the native reader instead. -->
+  <div class="pdf-modal hidden" id="pdfModal" role="dialog" aria-modal="true" aria-label="Read PDF">
+    <div class="pdf-sheet">
+      <div class="pdf-head">
+        <h2 id="pdfTitle">PDF</h2>
+        <a class="pdf-open" id="pdfOpen" href="#" target="_blank" rel="noopener">Open in a tab</a>
+        <button class="icon-btn" id="pdfClose" aria-label="Close">×</button>
+      </div>
+      <iframe id="pdfFrame" title="PDF reader"></iframe>
+    </div>
+  </div>
+
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 
   <script src="vendor/qrcode.js"></script>
