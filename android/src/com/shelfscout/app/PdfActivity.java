@@ -1,23 +1,28 @@
 package com.shelfscout.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.pdf.PdfRenderer;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
+import android.text.InputType;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -78,9 +83,12 @@ public class PdfActivity extends Activity {
     bar.addView(heading, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
     counter = new TextView(this);
-    counter.setTextColor(Color.parseColor("#A99C88"));
+    counter.setTextColor(Color.parseColor("#D9A15C"));
     counter.setTextSize(12);
-    counter.setPadding(dp(8), 0, dp(8), 0);
+    counter.setPadding(dp(8), dp(6), dp(8), dp(6));
+    counter.setPaintFlags(counter.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
+    counter.setText("Opening...");
+    counter.setOnClickListener(v -> showJumpDialog());
     bar.addView(counter);
 
     Button close = new Button(this);
@@ -171,6 +179,7 @@ public class PdfActivity extends Activity {
           fail("This PDF has no pages.");
           return;
         }
+        reading.edit().putInt(positionKey + "_pages", count).apply();
         int saved = reading.getInt(positionKey, 0);
         showPage(Math.max(0, Math.min(saved, count - 1)));
       });
@@ -247,8 +256,45 @@ public class PdfActivity extends Activity {
 
     reading.edit().putInt(positionKey, index).apply();
     counter.setText((index + 1) + " / " + count);
+    counter.setContentDescription("Page " + (index + 1) + " of " + count + ". Tap to jump to a page.");
     prev.setEnabled(index > 0);
     next.setEnabled(index < count - 1);
+  }
+
+  /** The page counter is a button: tap it and type a page to jump there. */
+  private void showJumpDialog() {
+    if (renderer == null) return;
+    final int total = renderer.getPageCount();
+    if (total <= 0) return;
+
+    final EditText input = new EditText(this);
+    input.setInputType(InputType.TYPE_CLASS_NUMBER);
+    input.setText(String.valueOf(pageIndex + 1));
+    input.setSelectAllOnFocus(true);
+    input.setHint("1 - " + total);
+
+    FrameLayout holder = new FrameLayout(this);
+    holder.setPadding(dp(20), dp(4), dp(20), 0);
+    holder.addView(input, new FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+    new AlertDialog.Builder(this)
+        .setTitle("Go to page")
+        .setView(holder)
+        .setPositiveButton("Go", (dialog, which) -> {
+          try {
+            int wanted = Integer.parseInt(input.getText().toString().trim());
+            if (wanted < 1 || wanted > total) {
+              Toast.makeText(this, "Enter a page between 1 and " + total + ".", Toast.LENGTH_SHORT).show();
+              return;
+            }
+            showPage(wanted - 1);
+          } catch (NumberFormatException e) {
+            Toast.makeText(this, "Enter a page number.", Toast.LENGTH_SHORT).show();
+          }
+        })
+        .setNegativeButton("Cancel", null)
+        .show();
   }
 
   private void fail(String message) {
@@ -303,6 +349,20 @@ public class PdfActivity extends Activity {
   static File cacheFile(Context context, String bookId, String url) {
     int hash = url == null ? 0 : url.hashCode();
     return new File(cacheDir(context), safe(bookId) + "-" + Integer.toHexString(hash) + ".pdf");
+  }
+
+  /**
+   * Last page saved for this book, so the book screen can show progress and
+   * offer Continue reading. Returns an empty string when it was never opened.
+   */
+  public static String readProgress(Context context, String bookId, String url) {
+    SharedPreferences prefs = context.getSharedPreferences("shelfscout_reading", Context.MODE_PRIVATE);
+    String key = positionKey(bookId, url);
+    if (!prefs.contains(key)) return "";
+    int page = prefs.getInt(key, 0);
+    int pages = prefs.getInt(key + "_pages", 0);
+    if (pages > 0 && page >= pages) page = pages - 1;
+    return "{\"page\":" + (page + 1) + ",\"pages\":" + Math.max(0, pages) + "}";
   }
 
   /** Removes the cached PDF and the saved page for one book that was deleted. */

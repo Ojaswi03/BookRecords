@@ -543,6 +543,12 @@ public class MainActivity extends Activity {
       openPdfInApp(url, bookId, title);
     }
 
+    /** How far this book has been read, for the book screen and progress bar. */
+    @JavascriptInterface
+    public String readProgress(String bookId, String url) {
+      return PdfActivity.readProgress(MainActivity.this, bookId, url);
+    }
+
     /** App options, reachable without long-press so paste keeps working. */
     @JavascriptInterface
     public void appMenu() {

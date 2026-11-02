@@ -90,6 +90,12 @@
       <p class="hint" id="scanHint">Hold the barcode on the back of the book inside the frame.</p>
       <p class="scan-error hidden" id="scanError"></p>
 
+      <label class="multi-scan" for="multiScan">
+        <input type="checkbox" id="multiScan">
+        <span>Keep scanning after each book</span>
+      </label>
+      <p class="multi-count hidden" id="multiCount"></p>
+
       <form class="isbn-form" id="isbnForm">
         <input id="isbnInput" inputmode="numeric" autocomplete="off" placeholder="Or type the ISBN, e.g. 9780553381689" aria-label="ISBN">
         <button class="btn primary" type="submit">Add</button>

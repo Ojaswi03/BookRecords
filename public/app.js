@@ -14,6 +14,7 @@ const state = {
   banner: null, // { id, phase }
   ranks: new Map(),
   detailCover: null, // data URL of a cover uploaded in the detail editor
+  detailEditing: false,
 };
 
 // State for the manual form's ISBN autofill.
@@ -98,9 +99,51 @@ function normalizeGenre(g) {
   return state.genres.includes(g) ? g : "Other";
 }
 
+const STATUS_LABELS = {
+  unread: "Unread",
+  reading: "Reading",
+  finished: "Finished",
+  abandoned: "Abandoned",
+};
+
+function bookStatus(b) {
+  return STATUS_LABELS[b.status] ? b.status : "";
+}
+
+function statusChip(b) {
+  const status = bookStatus(b);
+  return status ? `<span class="status-chip st-${status}">${STATUS_LABELS[status]}</span>` : "";
+}
+
+function stars(rating) {
+  const n = Math.max(0, Math.min(5, Math.trunc(Number(rating) || 0)));
+  return n ? `<span class="stars" title="${n} out of 5">${"★".repeat(n)}${"☆".repeat(5 - n)}</span>` : "";
+}
+
+function bookTags(b) {
+  return Array.isArray(b.tags) ? b.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+}
+
+function tagChips(b, limit = 0) {
+  const tags = limit > 0 ? bookTags(b).slice(0, limit) : bookTags(b);
+  return tags.map((t) => `<span class="tag-chip">${esc(t)}</span>`).join("");
+}
+
 function matches(b, q) {
   if (!q) return true;
-  const hay = [b.title, (b.authors || []).join(" "), b.genre, b.isbn, b.loanedTo, (b.subjects || []).join(" ")]
+  const hay = [
+    b.title,
+    (b.authors || []).join(" "),
+    b.genre,
+    b.isbn,
+    b.loanedTo,
+    (b.subjects || []).join(" "),
+    b.notes,
+    b.quotes,
+    bookTags(b).join(" "),
+    b.status ? STATUS_LABELS[b.status] || "" : "",
+    b.rating ? `${b.rating} stars` : "",
+  ]
     .join(" ")
     .toLowerCase();
   return hay.includes(q);
@@ -143,6 +186,24 @@ function pdfHref(b) {
 function pdfStatus(b) {
   if (pdfHref(b)) return `Free copy from ${b.pdfSource || "the web"}.`;
   return b.pdfNote || "No free legal copy checked yet.";
+}
+
+// The native reader stores the last page. Older APKs have no bridge, so the
+// progress simply stays hidden there.
+function pdfProgress(b, url) {
+  const bridge = window.ShelfApp;
+  if (!url || !bridge || typeof bridge.readProgress !== "function") return null;
+  try {
+    const raw = bridge.readProgress(b.id, url);
+    if (!raw) return null;
+    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const page = Number(data && data.page);
+    const pages = Number(data && data.pages);
+    if (!Number.isFinite(page) || page < 1) return null;
+    return { page, pages: Number.isFinite(pages) && pages > 0 ? pages : 0 };
+  } catch {
+    return null;
+  }
 }
 
 // The in-app reader is native code: a web-file update cannot supply it.
@@ -231,6 +292,7 @@ function rowHTML(b) {
   const thumb = cover
     ? `<img src="${esc(cover)}" alt="" loading="lazy" onerror="this.remove()">`
     : "📖";
+  const badges = [statusChip(b), stars(b.rating), tagChips(b, 3)].filter(Boolean).join("");
   return `<article class="row" data-id="${b.id}">
     <div class="idx">${rank}</div>
     <div class="thumb">${thumb}</div>
@@ -238,6 +300,7 @@ function rowHTML(b) {
       <h3>${esc(b.title)}${(b.count || 1) > 1 ? ` <span class="count-badge">×${b.count}</span>` : ""}${pdfHref(b) ? ' <span class="pdf-badge">PDF</span>' : ""}</h3>
       <p class="author">${esc(author)}</p>
       <p class="sub">${esc(sub)}</p>
+      ${badges ? `<p class="row-badges">${badges}</p>` : ""}
       ${loanLine(b)}
     </div>
     <button class="del" data-del="${b.id}" aria-label="Remove ${esc(b.title)}" title="Remove">×</button>
@@ -392,7 +455,20 @@ function renderBanner() {
  * Barcode scanning
  * ------------------------------------------------------------------ */
 
-const scan = { active: false, stream: null, reader: null, timer: null, detector: null, busy: false, lastCode: "", lastAt: 0 };
+const scan = { active: false, stream: null, reader: null, timer: null, detector: null, busy: false, lastCode: "", lastAt: 0, added: 0, lastId: null };
+
+function multiScanOn() {
+  const box = $("#multiScan");
+  return Boolean(box && box.checked);
+}
+
+function multiPref() {
+  try { return localStorage.getItem("shelfscout.multiscan") === "1"; } catch { return false; }
+}
+
+function saveMultiPref(on) {
+  try { localStorage.setItem("shelfscout.multiscan", on ? "1" : "0"); } catch { /* private mode */ }
+}
 
 function scanError(msg) {
   const el = $("#scanError");
@@ -401,9 +477,18 @@ function scanError(msg) {
 }
 
 async function openScanner() {
+  scan.added = 0;
+  scan.lastId = null;
   $("#scanModal").classList.remove("hidden");
   $("#scanError").classList.add("hidden");
   $("#scanHint").textContent = "Hold the barcode on the back of the book inside the frame.";
+  const multiBox = $("#multiScan");
+  if (multiBox) multiBox.checked = multiPref();
+  const multiCount = $("#multiCount");
+  if (multiCount) {
+    multiCount.textContent = "";
+    multiCount.classList.add("hidden");
+  }
   const video = $("#video");
 
   if ("BarcodeDetector" in window && !scan.detector) {
@@ -447,7 +532,7 @@ async function openScanner() {
   }
 }
 
-function closeScanner() {
+function closeScanner(finalize = true) {
   scan.active = false;
   if (scan.timer) { clearInterval(scan.timer); scan.timer = null; }
   if (scan.reader) { try { scan.reader.reset(); } catch { /* ignore */ } scan.reader = null; }
@@ -455,6 +540,21 @@ function closeScanner() {
   const v = $("#video");
   if (v) v.srcObject = null;
   $("#scanModal").classList.add("hidden");
+  if (finalize) finishMultiScan();
+}
+
+async function finishMultiScan() {
+  const id = scan.lastId;
+  const count = scan.added;
+  scan.added = 0;
+  scan.lastId = null;
+  if (!id) return;
+  try {
+    await reload(id, "added");
+    if (count > 1) toast(`Added ${count} books. The last one is highlighted.`);
+  } catch {
+    /* the shelf catches up on the next load */
+  }
 }
 
 function onCode(raw) {
@@ -469,6 +569,7 @@ function onCode(raw) {
 async function submitISBN(raw) {
   if (scan.busy) return;
   scan.busy = true;
+  let keptScanning = false;
   $("#scanHint").textContent = "Looking that book up online...";
   try {
     const data = await api("/api/scan", {
@@ -476,11 +577,40 @@ async function submitISBN(raw) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ isbn: raw }),
     });
-    closeScanner();
+
+    if (multiScanOn() && !data.existed) {
+      keptScanning = true;
+      scan.added += 1;
+      scan.lastId = data.book.id;
+      state.books = (await api("/api/books")).books;
+      state.highlightId = null;
+      state.banner = null;
+      render();
+      const count = $("#multiCount");
+      if (count) {
+        count.textContent = `${scan.added} book${scan.added === 1 ? "" : "s"} added. Keep scanning, or close when done.`;
+        count.classList.remove("hidden");
+      }
+      $("#scanHint").textContent = `Added "${data.book.title}". Point at the next barcode.`;
+      if (window.CoverCache) CoverCache.warm(state.books.map((b) => b.cover));
+      return;
+    }
+
+    if (multiScanOn() && data.existed) {
+      const already = scan.added;
+      closeScanner(false);
+      scan.added = 0;
+      scan.lastId = null;
+      await reload(data.book.id, "confirm");
+      if (already) toast(`${already} book${already === 1 ? "" : "s"} added before this duplicate.`);
+      return;
+    }
+
+    closeScanner(false);
     await reload(data.book.id, data.existed ? "confirm" : "added");
   } catch (err) {
     if (err.status === 404) {
-      closeScanner();
+      closeScanner(true);
       openManual({ isbn: String(raw).replace(/\D/g, "") });
       toast("No online record for that barcode - add the details yourself.");
     } else if (err.status === 400) {
@@ -490,8 +620,10 @@ async function submitISBN(raw) {
     }
   } finally {
     scan.busy = false;
-    const hint = $("#scanHint");
-    if (hint) hint.textContent = "Hold the barcode on the back of the book inside the frame.";
+    if (!keptScanning) {
+      const hint = $("#scanHint");
+      if (hint) hint.textContent = "Hold the barcode on the back of the book inside the frame.";
+    }
   }
 }
 
@@ -730,7 +862,7 @@ function csvCell(value) {
 // Spreadsheet copy. Uploaded covers are data URLs and would make the file huge,
 // so they are described here - the JSON backup keeps them.
 function booksToCSV() {
-  const head = ["Title", "Author(s)", "Genre", "ISBN", "Year", "Publisher", "Pages", "Copies", "Loaned to", "Loaned on", "Due back", "Subjects", "Cover", "Source", "Added"];
+  const head = ["Title", "Author(s)", "Genre", "ISBN", "Year", "Publisher", "Pages", "Copies", "Status", "Rating (0-5)", "Tags", "Notes", "Quotes", "Loaned to", "Loaned on", "Due back", "Subjects", "Cover", "Source", "Added"];
   const rows = state.books.map((b) => [
     b.title,
     (b.authors || []).join(", "),
@@ -740,6 +872,11 @@ function booksToCSV() {
     b.publisher,
     b.pages || "",
     b.count || 1,
+    STATUS_LABELS[b.status] || "",
+    Number(b.rating) || "",
+    bookTags(b).join(", "),
+    b.notes || "",
+    b.quotes || "",
     b.loanedTo || "",
     String(b.loanedAt || "").slice(0, 10),
     String(b.dueAt || "").slice(0, 10),
@@ -892,6 +1029,10 @@ function renderBookView(b) {
   const secIdx = sectionBooks.findIndex((x) => x.id === b.id) + 1;
   const cover = coverSrc(b.cover);
   const pdf = pdfHref(b);
+  const progress = pdf ? pdfProgress(b, pdf) : null;
+  const pct = progress && progress.pages
+    ? Math.min(100, Math.max(0, Math.round((progress.page / progress.pages) * 100)))
+    : 0;
 
   $("#detailBody").innerHTML = `
     <div class="book-view">
@@ -909,6 +1050,9 @@ function renderBookView(b) {
             ${b.year ? `<span class="chip">${esc(b.year)}</span>` : ""}
             ${(b.count || 1) > 1 ? `<span class="chip copy">×${b.count} copies</span>` : ""}
           </p>
+          ${(statusChip(b) || stars(b.rating) || bookTags(b).length)
+            ? `<p class="book-badges">${statusChip(b)}${stars(b.rating)}${tagChips(b)}</p>`
+            : ""}
           <p class="sub">#${rank} of ${state.books.length} · slot ${secIdx} of ${sectionBooks.length} in ${esc(genre)}</p>
           <p class="sub">${above ? `▲ Put it under ${esc(labelOf(above))}` : "▲ Top of this section"}</p>
           <p class="sub">${below ? `▼ Put it above ${esc(labelOf(below))}` : "▼ Bottom of this section"}</p>
@@ -916,14 +1060,21 @@ function renderBookView(b) {
         </div>
       </div>
 
-      <p class="pdf-status" id="pdfStatus">${esc(pdfStatus(b))}</p>
+      <p class="pdf-status" id="pdfStatus">${esc(pdfStatus(b))}${progress ? ` <span class="pdf-progress">Saved on page ${progress.page}${progress.pages ? ` of ${progress.pages}` : ""}.</span>` : ""}</p>
+      ${progress ? `<div class="read-progress" aria-label="Reading progress">
+        <span class="read-track"><span style="width:${pct}%"></span></span>
+        <span class="read-label">Page ${progress.page}${progress.pages ? ` of ${progress.pages}` : ""}${pct ? ` · ${pct}% read` : ""}</span>
+      </div>` : ""}
       ${pdf && pdfNeedsAppUpdate() ? `<p class="pdf-warn">This app build opens PDFs in Chrome. <a href="${APK_URL}" target="_blank" rel="noopener">Install the latest app once</a> to read them inside ShelfScout.</p>` : ""}
       ${pdf ? "" : `<p class="pdf-find"><button class="link-btn" type="button" data-find-pdf="${b.id}">Find a free PDF</button></p>`}
 
       <div class="banner-actions">
-        ${pdf ? `<button class="btn primary" data-read="${b.id}">Read PDF</button>` : ""}
+        ${pdf ? `<button class="btn primary" data-read="${b.id}">${progress ? "Continue reading" : "Read PDF"}</button>` : ""}
         <button class="btn ${pdf ? "ghost" : "primary"}" data-edit="${b.id}">Edit info</button>
       </div>
+
+      ${b.notes ? `<section class="book-note"><h3>Notes</h3><p>${esc(b.notes)}</p></section>` : ""}
+      ${b.quotes ? `<section class="book-note"><h3>Quotes</h3><p>${esc(b.quotes)}</p></section>` : ""}
     </div>`;
 
   $("#detailModal").classList.remove("hidden");
@@ -934,6 +1085,7 @@ function openDetail(id, edit = false) {
   if (!b) return;
   state.detailId = id;
   state.detailCover = null;
+  state.detailEditing = Boolean(edit);
 
   if (!edit) {
     renderBookView(b);
@@ -983,6 +1135,26 @@ function openDetail(id, edit = false) {
         <label>Pages <input id="dPages" inputmode="numeric" value="${b.pages ?? ""}"></label>
         <label>Copies <input id="dCount" inputmode="numeric" min="1" value="${b.count || 1}"></label>
       </div>
+      <fieldset class="reading-fieldset">
+        <legend>Reading</legend>
+        <div class="grid2">
+          <label>Status
+            <select id="dStatus">
+              <option value="">Not set</option>
+              ${Object.entries(STATUS_LABELS).map(([key, label]) => `<option value="${key}"${bookStatus(b) === key ? " selected" : ""}>${label}</option>`).join("")}
+            </select>
+          </label>
+          <label>Rating
+            <select id="dRating">
+              <option value="0"${Number(b.rating) ? "" : " selected"}>No rating</option>
+              ${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${Number(b.rating) === n ? " selected" : ""}>${"★".repeat(n)} (${n})</option>`).join("")}
+            </select>
+          </label>
+        </div>
+        <label>Tags <input id="dTags" value="${esc(bookTags(b).join(", "))}" placeholder="signed, reference, to read next"></label>
+        <label>Notes <textarea id="dNotes" rows="3" maxlength="5000" placeholder="What you thought, where it came from...">${esc(b.notes || "")}</textarea></label>
+        <label>Quotes <textarea id="dQuotes" rows="3" maxlength="5000" placeholder="Lines worth keeping">${esc(b.quotes || "")}</textarea></label>
+      </fieldset>
       <fieldset class="loan-fieldset">
         <legend>On loan</legend>
         <div class="grid2">
@@ -1070,6 +1242,11 @@ $("#detailBody").addEventListener("submit", async (e) => {
         count: $("#dCount").value,
         cover: state.detailCover || $("#dCover").value,
         subjects: $("#dSubjects").value.split(",").map((s) => s.trim()).filter(Boolean),
+        status: $("#dStatus").value,
+        rating: $("#dRating").value,
+        tags: $("#dTags").value.split(",").map((s) => s.trim()).filter(Boolean),
+        notes: $("#dNotes").value,
+        quotes: $("#dQuotes").value,
         loanedTo: $("#dLoanedTo").value,
         loanedAt: $("#dLoanedAt").value,
         dueAt: $("#dDueAt").value,
@@ -1087,8 +1264,20 @@ $("#detailBody").addEventListener("submit", async (e) => {
 
 function closeDetail() {
   state.detailId = null;
+  state.detailEditing = false;
   $("#detailModal").classList.add("hidden");
 }
+
+// Coming back from the native reader? Refresh the visible book so its saved
+// page and progress bar are current. Never redraw an edit form in progress.
+function refreshOpenBook() {
+  if (document.hidden || !state.detailId || state.detailEditing) return;
+  const modal = $("#detailModal");
+  if (modal && !modal.classList.contains("hidden")) openDetail(state.detailId);
+}
+
+window.addEventListener("focus", refreshOpenBook);
+document.addEventListener("visibilitychange", refreshOpenBook);
 
 $("#detailClose").addEventListener("click", closeDetail);
 $("#detailBody").addEventListener("click", async (e) => {
@@ -1238,8 +1427,14 @@ function initPullRefresh() {
   document.addEventListener("touchcancel", finish);
 }
 
+const multiBox = $("#multiScan");
+if (multiBox) {
+  multiBox.checked = multiPref();
+  multiBox.addEventListener("change", () => saveMultiPref(multiBox.checked));
+}
+
 $("#scanBtn").addEventListener("click", openScanner);
-$("#scanClose").addEventListener("click", closeScanner);
+$("#scanClose").addEventListener("click", () => closeScanner(true));
 
 $("#isbnForm").addEventListener("submit", (e) => {
   e.preventDefault();

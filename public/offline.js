@@ -335,6 +335,13 @@ window.ShelfOffline = (function () {
       pdfUrl: record.pdfUrl || "",
       pdfSource: record.pdfSource || "",
       pdfNote: record.pdfNote || "",
+      status: ["unread", "reading", "finished", "abandoned"].includes(record.status) ? record.status : "",
+      rating: Math.max(0, Math.min(5, Math.trunc(Number(record.rating) || 0))),
+      tags: Array.isArray(record.tags)
+        ? record.tags.map((t) => String(t).trim().slice(0, 30)).filter(Boolean).slice(0, 20)
+        : [],
+      notes: String(record.notes || "").slice(0, 5000),
+      quotes: String(record.quotes || "").slice(0, 5000),
       addedAt: new Date().toISOString(),
       count: 1,
     };
@@ -558,6 +565,18 @@ window.ShelfOffline = (function () {
       }
       if (typeof body.loanedAt === "string") patch.loanedAt = body.loanedAt.trim().slice(0, 10);
       if (typeof body.dueAt === "string") patch.dueAt = body.dueAt.trim().slice(0, 10);
+      if (typeof body.status === "string" && ["", "unread", "reading", "finished", "abandoned"].includes(body.status)) {
+        patch.status = body.status;
+      }
+      if (body.rating !== undefined) {
+        const rating = Number(body.rating);
+        patch.rating = Number.isFinite(rating) ? Math.max(0, Math.min(5, Math.trunc(rating))) : 0;
+      }
+      if (Array.isArray(body.tags)) {
+        patch.tags = body.tags.map((t) => String(t).trim().slice(0, 30)).filter(Boolean).slice(0, 20);
+      }
+      if (typeof body.notes === "string") patch.notes = body.notes.slice(0, 5000);
+      if (typeof body.quotes === "string") patch.quotes = body.quotes.slice(0, 5000);
       books[idx] = { ...books[idx], ...patch, editedAt: new Date().toISOString() };
       writeBooks(books);
       return { book: books[idx] };

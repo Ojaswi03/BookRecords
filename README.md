@@ -75,6 +75,16 @@ On the phone the file is written to `Downloads/ShelfScout/`. In a browser or the
 
 Open a book and fill in **Lent to** and, if you want, **Due back**. The book keeps its shelf position, and its row shows who has it and the due date. **Mark returned** clears the loan.
 
+## Reading tracker
+
+Edit a book to set its **status** (Unread, Reading, Finished or Abandoned), a **rating** from one to five stars, any number of **free tags** such as `signed`, `reference` or `to read next`, plus **notes** and **quotes**. Status, rating and the first few tags appear on the shelf row, and all of them can be searched. Tags are separate from genre, so one book can be both "Science Fiction" and "signed".
+
+When a book has a PDF, the book screen shows how far you have read: the saved page, the total pages, and a progress bar. The button changes to **Continue reading**. The native reader saves the page on every turn, so closing and reopening returns to that page. In the reader, the page counter is a button: tap it, type a page number and press **Go** to jump straight there. Deleting the book removes its saved reading position too.
+
+## Scanning several books
+
+In the scan window, turn on **Keep scanning after each book**. After a book is added, the camera stays open and a running count shows how many you have added. Point at the next barcode, and close the window when the stack is done; the last book is highlighted with its shelf position. If a barcode is a book you already own, scanning pauses for the "another copy or a mistake?" question rather than silently changing the count.
+
 Covers are cached on each device after they first load, so the shelf still shows them with no internet. Covers uploaded from a file are stored small to keep the library file lean.
 
 ## Free PDFs
@@ -89,7 +99,9 @@ If **Read PDF** opens Chrome, the phone is running an older APK. The reader is n
 
 Long-pressing a text field in the app selects text and opens Android's Copy / Paste menu. The app's own options (connect to a computer, use this phone, reset app files) are on **App settings** in the footer, so the WebView no longer intercepts long presses.
 
-The PDF reader remembers the page you stopped on for each book, and opens there next time. Deleting a book removes that saved position too.
+The PDF reader remembers the page you stopped on for each book, and opens there next time. The book screen shows that page in a progress bar, and the reader's page counter can be tapped to jump to any page. Deleting a book removes that saved position too.
+
+CSV backups include the reading status, rating, tags, notes and quotes, so the spreadsheet copy matches what the app shows.
 
 ## Refreshing
 
