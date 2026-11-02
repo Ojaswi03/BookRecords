@@ -12,6 +12,7 @@ const FEATURE_DEFAULTS = {
   multiScan: true,
   pdfLookup: true,
   filters: true,
+  shelfLocation: true,
 };
 
 const state = {
@@ -154,6 +155,9 @@ function matches(b, q) {
     b.title,
     (b.authors || []).join(" "),
     b.genre,
+    b.shelf,
+    b.row,
+    b.slot,
     b.isbn,
     b.loanedTo,
     (b.subjects || []).join(" "),
@@ -360,12 +364,24 @@ function labelOf(b) {
  * Rendering
  * ------------------------------------------------------------------ */
 
+// Where the physical copy sits. This is separate from the genre/A-Z order the
+// placement banner uses, so moving a book between shelves never changes it.
+function shelfLine(b) {
+  if (!featureOn("shelfLocation")) return "";
+  const parts = [];
+  if (b.shelf) parts.push(`Shelf ${b.shelf}`);
+  if (b.row) parts.push(`row ${b.row}`);
+  if (b.slot) parts.push(`slot ${b.slot}`);
+  return parts.join(" · ");
+}
+
 function rowHTML(b) {
   const rank = state.ranks.get(b.id) ?? "";
   const author = (b.authors || []).join(", ");
   // Genre first: it's what the shelf is organised by, so it survives truncation
   // on narrow phone rows.
   const sub = [b.genre, b.year, b.isbn ? `ISBN ${b.isbn}` : ""].filter(Boolean).join(" · ");
+  const where = shelfLine(b);
   const cover = coverSrc(b.cover);
   const thumb = cover
     ? `<img src="${esc(cover)}" alt="" loading="lazy" onerror="this.remove()">`
@@ -378,6 +394,7 @@ function rowHTML(b) {
       <h3>${esc(b.title)}${(b.count || 1) > 1 ? ` <span class="count-badge">×${b.count}</span>` : ""}${pdfHref(b) ? ' <span class="pdf-badge">PDF</span>' : ""}</h3>
       <p class="author">${esc(author)}</p>
       <p class="sub">${esc(sub)}</p>
+      ${where ? `<p class="shelf-loc">${esc(where)}</p>` : ""}
       ${badges ? `<p class="row-badges">${badges}</p>` : ""}
       ${loanLine(b)}
     </div>
@@ -736,7 +753,6 @@ function setLive(on, label) {
   badge.title = on
     ? `Live from ${location.host}. Changes appear here as they are published.`
     : "Not connected to the server right now. This device uses its own copy.";
-  renderConnection(on);
 }
 
 // The server the phone will try, so the banner can name it.
@@ -994,11 +1010,14 @@ function csvCell(value) {
 // Spreadsheet copy. Uploaded covers are data URLs and would make the file huge,
 // so they are described here - the JSON backup keeps them.
 function booksToCSV() {
-  const head = ["Title", "Author(s)", "Genre", "ISBN", "Year", "Publisher", "Pages", "Copies", "Status", "Rating (0-5)", "Tags", "Notes", "Quotes", "Loaned to", "Loaned on", "Due back", "Subjects", "Cover", "Source", "Added"];
+  const head = ["Title", "Author(s)", "Genre", "Shelf", "Row", "Slot", "ISBN", "Year", "Publisher", "Pages", "Copies", "Status", "Rating (0-5)", "Tags", "Notes", "Quotes", "Loaned to", "Loaned on", "Due back", "Subjects", "Cover", "Source", "Added"];
   const rows = state.books.map((b) => [
     b.title,
     (b.authors || []).join(", "),
     b.genre,
+    b.shelf || "",
+    b.row || "",
+    b.slot || "",
     b.isbn,
     b.year,
     b.publisher,
@@ -1159,6 +1178,7 @@ function renderBookView(b) {
   const genre = normalizeGenre(b.genre);
   const sectionBooks = all.filter((x) => normalizeGenre(x.genre) === genre);
   const secIdx = sectionBooks.findIndex((x) => x.id === b.id) + 1;
+  const where = shelfLine(b);
   const cover = coverSrc(b.cover);
   const pdf = featureOn("pdfLookup") ? pdfHref(b) : "";
   const progress = pdf ? pdfProgress(b, pdf) : null;
@@ -1184,6 +1204,7 @@ function renderBookView(b) {
             ${b.year ? `<span class="chip">${esc(b.year)}</span>` : ""}
             ${(b.count || 1) > 1 ? `<span class="chip copy">×${b.count} copies</span>` : ""}
           </p>
+          ${where ? `<p class="shelf-where"><span class="shelf-where-label">On the shelf</span> ${esc(where)}</p>` : ""}
           ${tracker && (statusChip(b) || stars(b.rating) || bookTags(b).length)
             ? `<p class="book-badges">${statusChip(b)}${stars(b.rating)}${tagChips(b)}</p>`
             : ""}
@@ -1271,6 +1292,15 @@ function openDetail(id, edit = false) {
         <label>Pages <input id="dPages" inputmode="numeric" value="${b.pages ?? ""}"></label>
         <label>Copies <input id="dCount" inputmode="numeric" min="1" value="${b.count || 1}"></label>
       </div>
+      <fieldset class="place-fieldset${featureOn("shelfLocation") ? "" : " hidden"}">
+        <legend>Shelf location</legend>
+        <div class="grid3">
+          <label>Shelf <input id="dShelf" value="${esc(b.shelf || "")}" placeholder="A" maxlength="24"></label>
+          <label>Row <input id="dRow" value="${esc(b.row || "")}" placeholder="2" maxlength="24"></label>
+          <label>Slot <input id="dSlot" value="${esc(b.slot || "")}" placeholder="14" maxlength="24"></label>
+        </div>
+        <p class="hint">Where the physical copy sits. The A-Z placement above stays the same.</p>
+      </fieldset>
       <fieldset class="reading-fieldset${featureOn("readingTracker") ? "" : " hidden"}">
         <legend>Reading</legend>
         <div class="grid2">
@@ -1376,6 +1406,9 @@ $("#detailBody").addEventListener("submit", async (e) => {
         publisher: $("#dPublisher").value,
         pages: $("#dPages").value,
         count: $("#dCount").value,
+        shelf: $("#dShelf").value,
+        row: $("#dRow").value,
+        slot: $("#dSlot").value,
         cover: state.detailCover || $("#dCover").value,
         subjects: $("#dSubjects").value.split(",").map((s) => s.trim()).filter(Boolean),
         status: $("#dStatus").value,

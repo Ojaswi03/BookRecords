@@ -63,6 +63,9 @@ case "$SERVER_URL" in
   *) SERVER_URL="" ;;
 esac
 SERVER_URL="${SERVER_URL%/}"
+# Auto-connect is paused for now: every install starts on its own copy. The
+# manual Connect to computer button still turns the server on for that session.
+SERVER_URL=""
 printf '%s' "$SERVER_URL" > "$ROOT/android/assets/www/serverurl.txt"
 echo "Live server baked into the app: ${SERVER_URL:-none}"
 

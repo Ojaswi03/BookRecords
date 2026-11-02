@@ -54,6 +54,7 @@ const FEATURE_DEFS = [
   ["multiScan", "Multi-scan", "Keep the camera open and add several books in a row.", true],
   ["pdfLookup", "Free PDF copies", "Find, download and read free legal PDFs.", true],
   ["filters", "Filter and sort", "Filter by genre, status or loan, and sort the shelf.", true],
+  ["shelfLocation", "Shelf location", "Shelf, row and slot for each physical copy.", true],
 ];
 
 function saveSettings() {
@@ -242,6 +243,11 @@ function allGenres() {
 function cleanGenre(value) {
   const genre = String(value || "").trim().replace(/\s+/g, " ");
   return genre ? genre.slice(0, 60) : "";
+}
+
+// A shelf, row or slot label. Short and free-form: "A", "2", "14" or "Desk".
+function cleanShelfPart(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").slice(0, 24);
 }
 
 /* ------------------------------------------------------------------ *
@@ -527,6 +533,9 @@ function makeBook(record) {
     pages: record.pages ?? null,
     source: record.source || "Manual entry",
     count: 1,
+    shelf: cleanShelfPart(record.shelf),
+    row: cleanShelfPart(record.row),
+    slot: cleanShelfPart(record.slot),
     loanedTo: record.loanedTo || "",
     loanedAt: record.loanedAt || "",
     dueAt: record.dueAt || "",
@@ -1217,6 +1226,9 @@ async function handleAPI(req, res, pathname) {
     }
     if (Array.isArray(body.subjects)) patch.subjects = body.subjects.map((s) => String(s).trim()).filter(Boolean);
     if (typeof body.cover === "string") patch.cover = body.cover.trim();
+    if (typeof body.shelf === "string") patch.shelf = cleanShelfPart(body.shelf);
+    if (typeof body.row === "string") patch.row = cleanShelfPart(body.row);
+    if (typeof body.slot === "string") patch.slot = cleanShelfPart(body.slot);
     if (body.count !== undefined) {
       const count = Number(body.count);
       if (Number.isFinite(count) && count >= 1) patch.count = Math.trunc(count);

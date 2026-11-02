@@ -79,6 +79,9 @@ public class MainActivity extends Activity {
   private static final String APP_URL = "https://" + APP_HOST + "/index.html";
 
   private static final long RETRY_MS = 15000;
+  // Live sync from the developer panel is paused for now: every launch starts
+  // on the phone copy. Connect to computer still works for that session.
+  private static final boolean AUTO_CONNECT = false;
 
   private SharedPreferences prefs;
   private FrameLayout root;
@@ -140,8 +143,9 @@ public class MainActivity extends Activity {
     }
   }
 
-  /** The saved link wins; otherwise the address baked in at build time. */
+  /** Auto-connect is paused, so the app always opens its own copy. */
   private String preferredServer() {
+    if (!AUTO_CONNECT) return "";
     String saved = prefs.getString(KEY_URL, "");
     if (!saved.isEmpty()) return saved;
     if (!prefs.getBoolean("auto_server", true)) return "";

@@ -344,6 +344,9 @@ window.ShelfOffline = (function () {
       quotes: String(record.quotes || "").slice(0, 5000),
       addedAt: new Date().toISOString(),
       count: 1,
+      shelf: String(record.shelf || "").trim().slice(0, 24),
+      row: String(record.row || "").trim().slice(0, 24),
+      slot: String(record.slot || "").trim().slice(0, 24),
     };
   }
 
@@ -355,6 +358,9 @@ window.ShelfOffline = (function () {
       genre: book.genre || "Other",
       subjects: book.subjects || [],
       count: Math.max(1, Number(book.count) || 1),
+      shelf: String(book.shelf || "").trim().slice(0, 24),
+      row: String(book.row || "").trim().slice(0, 24),
+      slot: String(book.slot || "").trim().slice(0, 24),
     };
   }
 
@@ -403,6 +409,7 @@ window.ShelfOffline = (function () {
           { key: "multiScan", label: "Multi-scan", description: "Keep the camera open and add several books in a row.", enabled: true },
           { key: "pdfLookup", label: "Free PDF copies", description: "Find, download and read free legal PDFs.", enabled: true },
           { key: "filters", label: "Filter and sort", description: "Filter by genre, status or loan, and sort the shelf.", enabled: true },
+          { key: "shelfLocation", label: "Shelf location", description: "Shelf, row and slot for each physical copy.", enabled: true },
         ],
       };
     }
@@ -566,6 +573,9 @@ window.ShelfOffline = (function () {
         patch.subjects = body.subjects.map((s) => String(s).trim()).filter(Boolean);
       }
       if (typeof body.cover === "string") patch.cover = body.cover.trim();
+      if (typeof body.shelf === "string") patch.shelf = body.shelf.trim().slice(0, 24);
+      if (typeof body.row === "string") patch.row = body.row.trim().slice(0, 24);
+      if (typeof body.slot === "string") patch.slot = body.slot.trim().slice(0, 24);
       if (body.count !== undefined) {
         const count = Number(body.count);
         if (Number.isFinite(count) && count >= 1) patch.count = Math.trunc(count);
