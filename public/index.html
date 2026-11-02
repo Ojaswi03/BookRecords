@@ -45,8 +45,43 @@
           <button data-mode="az">A-Z</button>
         </div>
       </div>
+
+      <div class="filters hidden" id="filters">
+        <select id="filterGenre" aria-label="Filter by genre"><option value="">All genres</option></select>
+        <select id="filterStatus" aria-label="Filter by reading status">
+          <option value="">Any status</option>
+          <option value="unread">Unread</option>
+          <option value="reading">Reading</option>
+          <option value="finished">Finished</option>
+          <option value="abandoned">Abandoned</option>
+        </select>
+        <select id="filterLoan" aria-label="Filter by loan">
+          <option value="">All books</option>
+          <option value="out">On loan</option>
+          <option value="in">On the shelf</option>
+        </select>
+        <select id="filterSort" aria-label="Sort books">
+          <option value="shelf">Shelf order</option>
+          <option value="title">Title A-Z</option>
+          <option value="author">Author A-Z</option>
+          <option value="year">Newest first</option>
+          <option value="added">Recently added</option>
+          <option value="pages">Longest first</option>
+        </select>
+      </div>
     </div>
   </header>
+
+  <section class="announce hidden" id="announce" aria-live="polite">
+    <div class="announce-inner">
+      <div>
+        <span class="announce-tag">ShelfScout update</span>
+        <p id="announceText"></p>
+        <span class="announce-date" id="announceAt"></span>
+      </div>
+      <button class="icon-btn" id="announceClose" aria-label="Dismiss">×</button>
+    </div>
+  </section>
 
   <section class="qr-panel hidden" id="qrPanel" aria-label="Open on your phone">
     <div class="qr-img" id="qrCode"></div>
@@ -184,6 +219,18 @@
         <button class="icon-btn" id="pdfClose" aria-label="Close">×</button>
       </div>
       <iframe id="pdfFrame" title="PDF reader"></iframe>
+    </div>
+  </div>
+
+  <!-- Developer controls. Locked with a PIN and opened with Ctrl+Shift+D or
+       six taps on the footer. Never linked from the normal interface. -->
+  <div class="modal hidden" id="devModal" role="dialog" aria-modal="true" aria-label="Developer controls">
+    <div class="modal-card dev-card">
+      <div class="modal-head">
+        <h2>Developer controls</h2>
+        <button class="icon-btn" id="devClose" aria-label="Close">×</button>
+      </div>
+      <div id="devBody"></div>
     </div>
   </div>
 

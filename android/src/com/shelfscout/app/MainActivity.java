@@ -35,6 +35,8 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import org.json.JSONObject;
+
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -551,7 +553,25 @@ public class MainActivity extends Activity {
     /** Opens the reader and asks for a voice, for the offline Listen button. */
     @JavascriptInterface
     public void listenPdf(String url, String bookId, String title) {
-      openPdfInApp(url, bookId, title, true);
+      boolean audio = getSharedPreferences("shelfscout_features", MODE_PRIVATE)
+          .getBoolean("audiobook", false);
+      openPdfInApp(url, bookId, title, audio);
+    }
+
+    /**
+     * Feature flags from the web app. Read aloud can be switched off in the
+     * developer panel, and the reader hides its Listen button to match.
+     */
+    @JavascriptInterface
+    public void setFeatures(String json) {
+      boolean audio = false;
+      try {
+        audio = new JSONObject(json == null ? "{}" : json).optBoolean("audiobook", false);
+      } catch (Exception ignored) {
+        /* malformed flags keep the safe default */
+      }
+      getSharedPreferences("shelfscout_features", MODE_PRIVATE).edit()
+          .putBoolean("audiobook", audio).apply();
     }
 
     /** How far this book has been read, for the book screen and progress bar. */

@@ -5,6 +5,15 @@ const $ = (s) => document.querySelector(s);
 // Used only when this APK is too old for the native reader.
 const APK_URL = "https://github.com/Ojaswi03/BookRecords/releases/latest/download/ShelfScout.apk";
 
+const FEATURE_DEFAULTS = {
+  audiobook: false,
+  loans: true,
+  readingTracker: true,
+  multiScan: true,
+  pdfLookup: true,
+  filters: true,
+};
+
 const state = {
   books: [],
   genres: [],
@@ -15,7 +24,13 @@ const state = {
   ranks: new Map(),
   detailCover: null, // data URL of a cover uploaded in the detail editor
   detailEditing: false,
+  flags: { ...FEATURE_DEFAULTS },
+  features: [],
+  announcement: null,
+  devNeedsPin: false,
 };
+
+const filters = { genre: "", status: "", loan: "", sort: "shelf" };
 
 // State for the manual form's ISBN autofill.
 const manual = { cover: "", lookedUp: "", timer: 0 };
@@ -32,6 +47,10 @@ function esc(v) {
     if (c === '"') return "&#34;";
     return "'";
   });
+}
+
+function featureOn(key) {
+  return state.flags[key] !== false;
 }
 
 // Identifies this tab, so live updates it triggered itself can be skipped.
@@ -246,7 +265,7 @@ function readPDF(b) {
 // Listen button simply stays hidden there.
 function hasListenBridge() {
   const bridge = window.ShelfApp;
-  return Boolean(bridge && typeof bridge.listenPdf === "function");
+  return featureOn("audiobook") && Boolean(bridge && typeof bridge.listenPdf === "function");
 }
 
 function listenPDF(b) {
@@ -291,6 +310,47 @@ function displayOrder(all) {
   return used.flatMap(([, list]) => list);
 }
 
+// Filters and sorting. Off by default only if the developer switches them off.
+const SORT_LABELS = { title: "title", author: "author", year: "newest first", added: "recently added", pages: "longest first" };
+
+function fillFilterGenres() {
+  const sel = $("#filterGenre");
+  if (!sel) return;
+  // Only genres that are actually on the shelf, so a filter never starts empty.
+  const used = [...new Set(state.books.map((b) => normalizeGenre(b.genre)))]
+    .sort((a, b) => a.localeCompare(b));
+  const key = used.join("|");
+  if (sel.dataset.key === key) return;
+  sel.dataset.key = key;
+  sel.innerHTML = `<option value="">All genres</option>`
+    + used.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("");
+  if (!used.includes(filters.genre)) filters.genre = "";
+  sel.value = filters.genre;
+}
+
+function filteredBooks(all) {
+  let list = all.filter((b) => matches(b, state.query));
+  if (!featureOn("filters")) return list;
+  if (filters.genre) list = list.filter((b) => normalizeGenre(b.genre) === filters.genre);
+  if (filters.status && featureOn("readingTracker")) list = list.filter((b) => bookStatus(b) === filters.status);
+  if (filters.loan === "out" && featureOn("loans")) list = list.filter((b) => Boolean(b.loanedTo));
+  if (filters.loan === "in" && featureOn("loans")) list = list.filter((b) => !b.loanedTo);
+  return list;
+}
+
+function sortedView(list) {
+  const copy = [...list];
+  if (!featureOn("filters")) return displayOrder(copy);
+  switch (filters.sort) {
+    case "title": return copy.sort((a, b) => String(a.title || "").localeCompare(String(b.title || "")));
+    case "author": return copy.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+    case "year": return copy.sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0));
+    case "added": return copy.sort((a, b) => String(b.addedAt || "").localeCompare(String(a.addedAt || "")));
+    case "pages": return copy.sort((a, b) => (Number(b.pages) || 0) - (Number(a.pages) || 0));
+    default: return displayOrder(copy);
+  }
+}
+
 function labelOf(b) {
   const author = (b.authors && b.authors[0]) || "Unknown author";
   return `${author} - ${b.title}`;
@@ -331,9 +391,12 @@ function sectionHTML(title, books) {
 }
 
 function render() {
+  fillFilterGenres();
   const all = sortedAll();
   state.ranks = new Map(all.map((b, i) => [b.id, i + 1]));
-  const list = all.filter((b) => matches(b, state.query));
+  const list = sortedView(filteredBooks(all));
+  const narrowed = featureOn("filters")
+    && Boolean(filters.genre || filters.status || filters.loan || filters.sort !== "shelf");
 
   const genreCount = new Set(all.map((b) => normalizeGenre(b.genre))).size;
   $("#stats").textContent = `${state.books.length} book${state.books.length === 1 ? "" : "s"}`
@@ -342,7 +405,9 @@ function render() {
   const lib = $("#library");
   if (!list.length) {
     lib.innerHTML = state.books.length
-      ? `<div class="empty"><h2>No matches</h2><p>Nothing on the shelf matches "${esc(state.query)}".</p></div>`
+      ? `<div class="empty"><h2>No matches</h2><p>${narrowed
+          ? "Nothing on the shelf matches these filters."
+          : `Nothing on the shelf matches "${esc(state.query)}".`}</p></div>`
       : `<div class="empty"><h2>Your shelf is empty</h2>
            <p>Tap <strong>Scan barcode</strong> and point your camera at the barcode on the back of a book.<br>
            ShelfScout looks it up online, shows the cover, and tells you exactly where it goes.</p></div>`;
@@ -351,7 +416,7 @@ function render() {
   }
 
   let html = "";
-  if (state.mode === "genre") {
+  if (state.mode === "genre" && (!featureOn("filters") || filters.sort === "shelf")) {
     const groups = new Map();
     for (const b of list) {
       const g = normalizeGenre(b.genre);
@@ -362,7 +427,10 @@ function render() {
       html += sectionHTML(g, groups.get(g));
     }
   } else {
-    html += sectionHTML("A-Z by author", list);
+    const title = state.mode === "az" || !featureOn("filters") || filters.sort === "shelf"
+      ? "A-Z by author"
+      : `Sorted by ${SORT_LABELS[filters.sort] || "title"}`;
+    html += sectionHTML(title, list);
   }
 
   lib.innerHTML = html;
@@ -476,6 +544,7 @@ function renderBanner() {
 const scan = { active: false, stream: null, reader: null, timer: null, detector: null, busy: false, lastCode: "", lastAt: 0, added: 0, lastId: null };
 
 function multiScanOn() {
+  if (!featureOn("multiScan")) return false;
   const box = $("#multiScan");
   return Boolean(box && box.checked);
 }
@@ -696,6 +765,14 @@ function initLive() {
       else if (data.reason === "removed") toast("A book was removed on another device.");
       else toast("Library updated from another device.");
     } catch { /* the stream reconnects and the next event retries */ }
+  });
+
+  // A feature switch or a new message from the developer panel.
+  stream.addEventListener("features", async () => {
+    await loadFeatures();
+    render();
+    if (state.detailId && !state.detailEditing) openDetail(state.detailId);
+    if (state.announcement && state.announcement.message) toast(state.announcement.message);
   });
 }
 
@@ -1046,8 +1123,10 @@ function renderBookView(b) {
   const sectionBooks = all.filter((x) => normalizeGenre(x.genre) === genre);
   const secIdx = sectionBooks.findIndex((x) => x.id === b.id) + 1;
   const cover = coverSrc(b.cover);
-  const pdf = pdfHref(b);
+  const pdf = featureOn("pdfLookup") ? pdfHref(b) : "";
   const progress = pdf ? pdfProgress(b, pdf) : null;
+  const tracker = featureOn("readingTracker");
+  const loans = featureOn("loans");
   const pct = progress && progress.pages
     ? Math.min(100, Math.max(0, Math.round((progress.page / progress.pages) * 100)))
     : 0;
@@ -1068,23 +1147,23 @@ function renderBookView(b) {
             ${b.year ? `<span class="chip">${esc(b.year)}</span>` : ""}
             ${(b.count || 1) > 1 ? `<span class="chip copy">×${b.count} copies</span>` : ""}
           </p>
-          ${(statusChip(b) || stars(b.rating) || bookTags(b).length)
+          ${tracker && (statusChip(b) || stars(b.rating) || bookTags(b).length)
             ? `<p class="book-badges">${statusChip(b)}${stars(b.rating)}${tagChips(b)}</p>`
             : ""}
           <p class="sub">#${rank} of ${state.books.length} · slot ${secIdx} of ${sectionBooks.length} in ${esc(genre)}</p>
           <p class="sub">${above ? `▲ Put it under ${esc(labelOf(above))}` : "▲ Top of this section"}</p>
           <p class="sub">${below ? `▼ Put it above ${esc(labelOf(below))}` : "▼ Bottom of this section"}</p>
-          ${b.loanedTo ? `<p class="loan-line">On loan to ${esc(b.loanedTo)}${b.dueAt ? ` · due ${esc(shortDate(b.dueAt))}` : ""}</p>` : ""}
+          ${loans && b.loanedTo ? `<p class="loan-line">On loan to ${esc(b.loanedTo)}${b.dueAt ? ` · due ${esc(shortDate(b.dueAt))}` : ""}</p>` : ""}
         </div>
       </div>
 
-      <p class="pdf-status" id="pdfStatus">${esc(pdfStatus(b))}${progress ? ` <span class="pdf-progress">Saved on page ${progress.page}${progress.pages ? ` of ${progress.pages}` : ""}.</span>` : ""}</p>
+      ${featureOn("pdfLookup") ? `<p class="pdf-status" id="pdfStatus">${esc(pdfStatus(b))}${progress ? ` <span class="pdf-progress">Saved on page ${progress.page}${progress.pages ? ` of ${progress.pages}` : ""}.</span>` : ""}</p>
       ${progress ? `<div class="read-progress" aria-label="Reading progress">
         <span class="read-track"><span style="width:${pct}%"></span></span>
         <span class="read-label">Page ${progress.page}${progress.pages ? ` of ${progress.pages}` : ""}${pct ? ` · ${pct}% read` : ""}</span>
       </div>` : ""}
       ${pdf && pdfNeedsAppUpdate() ? `<p class="pdf-warn">This app build opens PDFs in Chrome. <a href="${APK_URL}" target="_blank" rel="noopener">Install the latest app once</a> to read them inside ShelfScout.</p>` : ""}
-      ${pdf ? "" : `<p class="pdf-find"><button class="link-btn" type="button" data-find-pdf="${b.id}">Find a free PDF</button></p>`}
+      ${pdf ? "" : `<p class="pdf-find"><button class="link-btn" type="button" data-find-pdf="${b.id}">Find a free PDF</button></p>`}` : ""}
 
       <div class="banner-actions">
         ${pdf ? `<button class="btn primary" data-read="${b.id}">${progress ? "Continue reading" : "Read PDF"}</button>` : ""}
@@ -1093,8 +1172,8 @@ function renderBookView(b) {
       </div>
       ${pdf && hasListenBridge() ? `<p class="hint">Read aloud is offline and uses this phone's voice. It works when the PDF contains text; image-only scans need OCR, which is not included yet.</p>` : ""}
 
-      ${b.notes ? `<section class="book-note"><h3>Notes</h3><p>${esc(b.notes)}</p></section>` : ""}
-      ${b.quotes ? `<section class="book-note"><h3>Quotes</h3><p>${esc(b.quotes)}</p></section>` : ""}
+      ${tracker && b.notes ? `<section class="book-note"><h3>Notes</h3><p>${esc(b.notes)}</p></section>` : ""}
+      ${tracker && b.quotes ? `<section class="book-note"><h3>Quotes</h3><p>${esc(b.quotes)}</p></section>` : ""}
     </div>`;
 
   $("#detailModal").classList.remove("hidden");
@@ -1155,7 +1234,7 @@ function openDetail(id, edit = false) {
         <label>Pages <input id="dPages" inputmode="numeric" value="${b.pages ?? ""}"></label>
         <label>Copies <input id="dCount" inputmode="numeric" min="1" value="${b.count || 1}"></label>
       </div>
-      <fieldset class="reading-fieldset">
+      <fieldset class="reading-fieldset${featureOn("readingTracker") ? "" : " hidden"}">
         <legend>Reading</legend>
         <div class="grid2">
           <label>Status
@@ -1175,7 +1254,7 @@ function openDetail(id, edit = false) {
         <label>Notes <textarea id="dNotes" rows="3" maxlength="5000" placeholder="What you thought, where it came from...">${esc(b.notes || "")}</textarea></label>
         <label>Quotes <textarea id="dQuotes" rows="3" maxlength="5000" placeholder="Lines worth keeping">${esc(b.quotes || "")}</textarea></label>
       </fieldset>
-      <fieldset class="loan-fieldset">
+      <fieldset class="loan-fieldset${featureOn("loans") ? "" : " hidden"}">
         <legend>On loan</legend>
         <div class="grid2">
           <label>Lent to <input id="dLoanedTo" value="${esc(b.loanedTo || "")}" placeholder="Name"></label>
@@ -1357,12 +1436,269 @@ $("#detailBody").addEventListener("click", async (e) => {
 });
 
 /* ------------------------------------------------------------------ *
+ * Features and the developer panel
+ * ------------------------------------------------------------------ */
+
+async function loadFeatures() {
+  try {
+    const data = await api("/api/features");
+    state.features = Array.isArray(data.features) ? data.features : [];
+    const flags = { ...FEATURE_DEFAULTS };
+    for (const feature of state.features) flags[feature.key] = feature.enabled !== false;
+    state.flags = flags;
+    state.announcement = data.announcement || null;
+    state.devNeedsPin = Boolean(data.needsPin);
+  } catch {
+    state.features = [];
+    state.flags = { ...FEATURE_DEFAULTS };
+    state.announcement = null;
+  }
+  applyFeatures();
+  renderAnnouncement();
+  syncNativeFeatures();
+}
+
+function applyFeatures() {
+  const bar = $("#filters");
+  if (bar) bar.classList.toggle("hidden", !featureOn("filters"));
+  const status = $("#filterStatus");
+  if (status) status.classList.toggle("hidden", !featureOn("readingTracker"));
+  const loan = $("#filterLoan");
+  if (loan) loan.classList.toggle("hidden", !featureOn("loans"));
+  const multi = document.querySelector(".multi-scan");
+  if (multi) multi.classList.toggle("hidden", !featureOn("multiScan"));
+}
+
+// The Android reader hides its Listen button from this value, so the audio
+// feature can be switched off without another APK.
+function syncNativeFeatures() {
+  const bridge = window.ShelfApp;
+  if (!bridge || typeof bridge.setFeatures !== "function") return;
+  try {
+    bridge.setFeatures(JSON.stringify({ audiobook: featureOn("audiobook") }));
+  } catch {
+    /* older app builds have no feature bridge */
+  }
+}
+
+function renderAnnouncement() {
+  const box = $("#announce");
+  if (!box) return;
+  const a = state.announcement;
+  let seen = "";
+  try { seen = localStorage.getItem("shelfscout.announce") || ""; } catch { /* private mode */ }
+  if (!a || !a.message || (a.at && String(a.at) === seen)) {
+    box.classList.add("hidden");
+    return;
+  }
+  const text = $("#announceText");
+  if (text) text.textContent = a.message;
+  const when = $("#announceAt");
+  if (when) when.textContent = a.at ? `Published ${shortDate(a.at)}` : "";
+  box.classList.remove("hidden");
+}
+
+function initAnnouncement() {
+  const close = $("#announceClose");
+  if (!close) return;
+  close.addEventListener("click", () => {
+    const at = state.announcement && state.announcement.at ? String(state.announcement.at) : "";
+    if (at) {
+      try { localStorage.setItem("shelfscout.announce", at); } catch { /* private mode */ }
+    }
+    $("#announce").classList.add("hidden");
+  });
+}
+
+function initFilters() {
+  const genre = $("#filterGenre");
+  if (genre) genre.addEventListener("change", () => { filters.genre = genre.value; render(); });
+  const status = $("#filterStatus");
+  if (status) status.addEventListener("change", () => { filters.status = status.value; render(); });
+  const loan = $("#filterLoan");
+  if (loan) loan.addEventListener("change", () => { filters.loan = loan.value; render(); });
+  const sort = $("#filterSort");
+  if (sort) sort.addEventListener("change", () => { filters.sort = sort.value; render(); });
+}
+
+/* The panel is locked with a PIN that only the first setup creates. Six taps on
+ * the footer or Ctrl+Shift+D opens it; nothing on screen advertises it. */
+function devPin() {
+  try { return sessionStorage.getItem("shelfscout.dev") || ""; } catch { return ""; }
+}
+
+function setDevPin(pin) {
+  try {
+    if (pin) sessionStorage.setItem("shelfscout.dev", pin);
+    else sessionStorage.removeItem("shelfscout.dev");
+  } catch { /* private mode */ }
+}
+
+function initDevPanel() {
+  const openers = [$("#buildInfo"), $(".foot p")].filter(Boolean);
+  for (const node of openers) {
+    let taps = 0;
+    let timer = 0;
+    node.addEventListener("click", () => {
+      taps += 1;
+      clearTimeout(timer);
+      timer = setTimeout(() => { taps = 0; }, 1600);
+      if (taps >= 6) {
+        taps = 0;
+        openDev();
+      }
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && e.shiftKey && (e.key === "D" || e.key === "d")) {
+      e.preventDefault();
+      openDev();
+    }
+  });
+  const close = $("#devClose");
+  if (close) close.addEventListener("click", () => $("#devModal").classList.add("hidden"));
+}
+
+function openDev() {
+  $("#devModal").classList.remove("hidden");
+  renderDev();
+}
+
+function devStatus(text, bad) {
+  const el = $("#devStatus");
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("bad", Boolean(bad));
+}
+
+function renderDev() {
+  const box = $("#devBody");
+  if (!box) return;
+
+  if (window.ShelfOffline && ShelfOffline.active) {
+    box.innerHTML = `<p class="hint">Developer controls need the computer. Open ShelfScout on the computer, or connect this phone to it, then try again.</p>`;
+    return;
+  }
+
+  const pin = devPin();
+  if (!pin) {
+    const needsPin = state.devNeedsPin;
+    box.innerHTML = `
+      <p class="hint">${needsPin
+        ? "Create a PIN the first time. Only you can change features after that."
+        : "Enter your developer PIN to unlock the controls."}</p>
+      <form class="form" id="devLogin">
+        <label>Developer PIN
+          <input id="devPinInput" type="password" minlength="6" autocomplete="${needsPin ? "new-password" : "current-password"}" required>
+        </label>
+        ${needsPin ? `<label>Repeat PIN <input id="devPinAgain" type="password" minlength="6" autocomplete="new-password" required></label>` : ""}
+        <div class="banner-actions"><button class="btn primary" type="submit">${needsPin ? "Create PIN" : "Unlock"}</button></div>
+      </form>
+      <p class="hint dev-status" id="devStatus"></p>`;
+
+    $("#devLogin").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const value = $("#devPinInput").value;
+      if (value.length < 6) return devStatus("Use at least 6 characters.", true);
+      if (needsPin && value !== $("#devPinAgain").value) {
+        return devStatus("The two PINs do not match.", true);
+      }
+      try {
+        if (needsPin) {
+          await api("/api/dev/pin", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pin: value }),
+          });
+          state.devNeedsPin = false;
+        } else {
+          await api("/api/dev/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pin: value }),
+          });
+        }
+        setDevPin(value);
+        renderDev();
+      } catch (err) {
+        devStatus(err.message, true);
+      }
+    });
+    return;
+  }
+
+  if (!state.features.length) {
+    box.innerHTML = `<p class="hint">The feature list did not load. Reload the page and try again.</p>`;
+    return;
+  }
+
+  const message = state.announcement && state.announcement.message ? state.announcement.message : "";
+  box.innerHTML = `
+    <p class="hint">Switch a feature for every connected device. Nothing is released or reinstalled: the switch and the message below reach the app straight away. Native features still need their app build.</p>
+    <div class="dev-list">
+      ${state.features.map((feature) => `<label class="dev-item">
+        <span class="dev-text"><strong>${esc(feature.label)}</strong><small>${esc(feature.description || "")}</small></span>
+        <input type="checkbox" data-flag="${esc(feature.key)}"${featureOn(feature.key) ? " checked" : ""}>
+      </label>`).join("")}
+    </div>
+    <label class="dev-message">Message shown in the app
+      <textarea id="devMessage" rows="3" maxlength="600" placeholder="For example: Filters and sorting are on. Look under search.">${esc(message)}</textarea>
+    </label>
+    <div class="banner-actions">
+      <button class="btn primary" type="button" id="devSave">Publish changes</button>
+      <button class="btn ghost" type="button" id="devLock">Lock panel</button>
+    </div>
+    <p class="hint dev-status" id="devStatus"></p>`;
+
+  $("#devSave").addEventListener("click", async () => {
+    const flags = {};
+    box.querySelectorAll("[data-flag]").forEach((input) => {
+      flags[input.getAttribute("data-flag")] = input.checked;
+    });
+    const text = $("#devMessage").value.trim();
+    const button = $("#devSave");
+    button.disabled = true;
+    devStatus("Publishing...");
+    try {
+      const data = await api("/api/dev/features", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin, flags, message: text }),
+      });
+      state.features = Array.isArray(data.features) ? data.features : state.features;
+      const next = { ...FEATURE_DEFAULTS };
+      for (const feature of state.features) next[feature.key] = feature.enabled !== false;
+      state.flags = next;
+      state.announcement = data.announcement || null;
+      applyFeatures();
+      render();
+      renderAnnouncement();
+      syncNativeFeatures();
+      if (state.detailId && !state.detailEditing) openDetail(state.detailId);
+      devStatus("Published to every connected device.");
+      toast("Feature changes published.");
+    } catch (err) {
+      devStatus(err.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $("#devLock").addEventListener("click", () => {
+    setDevPin("");
+    renderDev();
+  });
+}
+
+/* ------------------------------------------------------------------ *
  * Wiring
  * ------------------------------------------------------------------ */
 
 async function init() {
   // Decide between the server library and the on-device library first.
   if (window.ShelfOffline) await ShelfOffline.init();
+
+  await loadFeatures();
 
   const [books, genres, urls] = await Promise.all([
     api("/api/books"),
@@ -1386,6 +1722,9 @@ async function init() {
   registerServiceWorker();
   initPullRefresh();
   initAppMenu();
+  initFilters();
+  initDevPanel();
+  initAnnouncement();
   if (window.CoverCache) CoverCache.warm(state.books.map((b) => b.cover));
 }
 

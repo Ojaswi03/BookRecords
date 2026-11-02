@@ -86,6 +86,7 @@ public class PdfActivity extends Activity {
   private String url = "";
   private String title = "";
   private boolean listenPending = false;
+  private boolean audioEnabled;
 
   private final AudioPlaybackService.Listener audioListener = new AudioPlaybackService.Listener() {
     @Override
@@ -151,6 +152,8 @@ public class PdfActivity extends Activity {
     // Where this book was left last time. Saved on every page turn and on pause.
     reading = getSharedPreferences("shelfscout_reading", MODE_PRIVATE);
     audioPrefs = getSharedPreferences("shelfscout_audio", MODE_PRIVATE);
+    audioEnabled = getSharedPreferences("shelfscout_features", MODE_PRIVATE)
+        .getBoolean("audiobook", false);
     positionKey = positionKey(bookId, url);
 
     LinearLayout root = new LinearLayout(this);
@@ -222,6 +225,7 @@ public class PdfActivity extends Activity {
     listen.setTextColor(Color.parseColor("#DCE8D8"));
     listen.setBackgroundColor(Color.parseColor("#2B3A2C"));
     listen.setOnClickListener(v -> showListenDialog());
+    listen.setVisibility(audioEnabled ? View.VISIBLE : View.GONE);
 
     next = new Button(this);
     next.setText("Next");
@@ -426,6 +430,10 @@ public class PdfActivity extends Activity {
 
   /** Opens the voice and style picker for the free offline voice. */
   private void showListenDialog() {
+    if (!audioEnabled) {
+      Toast.makeText(this, "Read aloud is turned off in ShelfScout.", Toast.LENGTH_SHORT).show();
+      return;
+    }
     if (renderer == null) {
       Toast.makeText(this, "The PDF is still opening.", Toast.LENGTH_SHORT).show();
       return;

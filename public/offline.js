@@ -392,6 +392,21 @@ window.ShelfOffline = (function () {
     const books = readBooks();
 
     if (method === "GET" && path === "/api/health") return { ok: true, mode: "device" };
+    if (method === "GET" && path === "/api/features") {
+      return {
+        needsPin: false,
+        announcement: null,
+        features: [
+          { key: "audiobook", label: "Read aloud", description: "Offline voice narration in the PDF reader.", enabled: false },
+          { key: "loans", label: "Loans", description: "Who borrowed a book, the dates and an on-loan badge.", enabled: true },
+          { key: "readingTracker", label: "Reading tracker", description: "Status, rating, tags, notes and quotes.", enabled: true },
+          { key: "multiScan", label: "Multi-scan", description: "Keep the camera open and add several books in a row.", enabled: true },
+          { key: "pdfLookup", label: "Free PDF copies", description: "Find, download and read free legal PDFs.", enabled: true },
+          { key: "filters", label: "Filter and sort", description: "Filter by genre, status or loan, and sort the shelf.", enabled: true },
+        ],
+      };
+    }
+    if (path.indexOf("/api/dev/") === 0) throw fail("Developer controls need the computer.", 403);
     if (method === "GET" && path === "/api/books") return { books };
     if (method === "GET" && path === "/api/genres") {
       const used = books.map((b) => b.genre).filter(Boolean);

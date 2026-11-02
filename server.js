@@ -40,6 +40,66 @@ function loadSettings() {
 }
 
 /* ------------------------------------------------------------------ *
+ * Features and the developer panel
+ *
+ * The flags are data, not code: changing one writes settings.json and is
+ * broadcast to every connected device, so no release is needed. The panel is
+ * locked with a PIN that only the first setup can create.
+ * ------------------------------------------------------------------ */
+
+const FEATURE_DEFS = [
+  ["audiobook", "Read aloud", "Offline voice narration in the PDF reader.", false],
+  ["loans", "Loans", "Who borrowed a book, the dates and an on-loan badge.", true],
+  ["readingTracker", "Reading tracker", "Status, rating, tags, notes and quotes.", true],
+  ["multiScan", "Multi-scan", "Keep the camera open and add several books in a row.", true],
+  ["pdfLookup", "Free PDF copies", "Find, download and read free legal PDFs.", true],
+  ["filters", "Filter and sort", "Filter by genre, status or loan, and sort the shelf.", true],
+];
+
+function saveSettings() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+}
+
+function featureFlags() {
+  const saved = settings.features && typeof settings.features === "object" ? settings.features : {};
+  const flags = {};
+  for (const [key, , , fallback] of FEATURE_DEFS) {
+    flags[key] = typeof saved[key] === "boolean" ? saved[key] : fallback;
+  }
+  return flags;
+}
+
+function featureList() {
+  const flags = featureFlags();
+  return FEATURE_DEFS.map(([key, label, description, fallback]) => ({
+    key,
+    label,
+    description,
+    default: fallback,
+    enabled: flags[key],
+  }));
+}
+
+function pinHash(pin, salt) {
+  return crypto.scryptSync(String(pin), salt, 32).toString("hex");
+}
+
+function setDevPin(pin) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  settings.devSalt = salt;
+  settings.devPin = pinHash(pin, salt);
+  saveSettings();
+}
+
+function checkDevPin(pin) {
+  if (!settings.devPin || !settings.devSalt || typeof pin !== "string") return false;
+  const given = Buffer.from(pinHash(pin, settings.devSalt), "hex");
+  const saved = Buffer.from(settings.devPin, "hex");
+  return given.length === saved.length && crypto.timingSafeEqual(given, saved);
+}
+
+/* ------------------------------------------------------------------ *
  * Genres
  * ------------------------------------------------------------------ */
 
@@ -863,6 +923,58 @@ async function handleAPI(req, res, pathname) {
   // can fall back to the on-device library instead of showing an empty shelf.
   if (req.method === "GET" && pathname === "/api/health") {
     return sendJSON(res, 200, { ok: true, mode: "server" });
+  }
+
+  // GET /api/features - the feature switches, plus the message to show users.
+  // The flags are public because every client needs them; the PIN never is.
+  if (req.method === "GET" && pathname === "/api/features") {
+    return sendJSON(res, 200, {
+      features: featureList(),
+      announcement: settings.announcement && settings.announcement.message ? settings.announcement : null,
+      needsPin: !settings.devPin,
+    });
+  }
+
+  // POST /api/dev/pin { pin } - create the PIN once, before anyone else can.
+  if (req.method === "POST" && pathname === "/api/dev/pin") {
+    const body = await readBody(req);
+    const pin = String(body.pin || "");
+    if (settings.devPin) return sendJSON(res, 409, { error: "A developer PIN already exists." });
+    // First claim only from the computer, never through the public tunnel.
+    if (req.headers["x-forwarded-for"] || req.headers["x-real-ip"]) {
+      return sendJSON(res, 403, { error: "Open the developer panel on the computer first." });
+    }
+    if (pin.length < 6) return sendJSON(res, 400, { error: "Use at least 6 characters." });
+    setDevPin(pin);
+    return sendJSON(res, 200, { ok: true });
+  }
+
+  // POST /api/dev/login { pin } - check the PIN without changing anything.
+  if (req.method === "POST" && pathname === "/api/dev/login") {
+    const body = await readBody(req);
+    if (!checkDevPin(body.pin)) return sendJSON(res, 401, { error: "Wrong developer PIN." });
+    return sendJSON(res, 200, { ok: true });
+  }
+
+  // POST /api/dev/features { pin, flags, message } - publish switches and the
+  // message every connected device shows. This is the release-free path.
+  if (req.method === "POST" && pathname === "/api/dev/features") {
+    const body = await readBody(req);
+    if (!checkDevPin(body.pin)) return sendJSON(res, 401, { error: "Wrong developer PIN." });
+    const flags = featureFlags();
+    if (body.flags && typeof body.flags === "object") {
+      for (const [key] of FEATURE_DEFS) {
+        if (typeof body.flags[key] === "boolean") flags[key] = body.flags[key];
+      }
+    }
+    settings.features = flags;
+    if (typeof body.message === "string") {
+      const message = body.message.trim().slice(0, 600);
+      settings.announcement = message ? { message, at: new Date().toISOString() } : null;
+    }
+    saveSettings();
+    broadcast("features", { reason: "features" });
+    return sendJSON(res, 200, { features: featureList(), announcement: settings.announcement || null });
   }
 
   // GET /api/books
