@@ -30,9 +30,12 @@ import android.util.Log;
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader;
 import com.tom_roush.pdfbox.io.MemoryUsageSetting;
 import com.tom_roush.pdfbox.pdmodel.PDDocument;
+import com.tom_roush.pdfbox.pdmodel.PDPage;
 import com.tom_roush.pdfbox.text.PDFTextStripper;
+import com.tom_roush.pdfbox.text.TextPosition;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -53,6 +56,8 @@ public class AudioPlaybackService extends Service {
   public static final String ACTION_RESUME = "com.shelfscout.app.AUDIO_RESUME";
   public static final String ACTION_NEXT = "com.shelfscout.app.AUDIO_NEXT";
   public static final String ACTION_PREVIOUS = "com.shelfscout.app.AUDIO_PREVIOUS";
+  public static final String ACTION_SEEK_PAGE = "com.shelfscout.app.AUDIO_SEEK_PAGE";
+  public static final String ACTION_SYNC = "com.shelfscout.app.AUDIO_SYNC";
 
   public static final String EXTRA_FILE = "file";
   public static final String EXTRA_URL = "url";
@@ -64,6 +69,7 @@ public class AudioPlaybackService extends Service {
   public static final String EXTRA_VOICE = "voice";
   public static final String EXTRA_STYLE = "style";
   public static final String EXTRA_SPEED = "speed";
+  public static final String EXTRA_SEEK_PAGE = "seek_page";
 
   private static final String CHANNEL = "shelfscout_audio";
   private static final String PREFS = "shelfscout_audio";
@@ -72,11 +78,15 @@ public class AudioPlaybackService extends Service {
   public interface Listener {
     void onProgress(int page, int totalPages, String state);
     void onError(String message);
+
+    /** The lines the voice is reading now, in page points from the top left. */
+    void onHighlight(int page, float[] boxes, float pageWidth, float pageHeight, String text);
   }
 
   private static Listener listener;
   private static String activeBook = "";
   private static String activeState = "idle";
+  private static int activePage;
 
   private TextToSpeech tts;
   private boolean ttsReady;
@@ -99,8 +109,9 @@ public class AudioPlaybackService extends Service {
   private String filePath = "";
   private String voiceName = "";
   private String utteranceId = "";
-  private final List<String> chunks = new ArrayList<>();
+  private final List<AudioText.Chunk> chunks = new ArrayList<>();
   private final List<Integer> pages = new ArrayList<>();
+  private final List<float[]> pageSizes = new ArrayList<>();
   private SharedPreferences prefs;
   private final Handler main = new Handler(Looper.getMainLooper());
   private AudioManager audio;
@@ -130,6 +141,57 @@ public class AudioPlaybackService extends Service {
 
   public static String stateFor(String id) {
     return isActiveFor(id) ? activeState : "";
+  }
+
+  public static int pageFor(String id) {
+    return isActiveFor(id) ? activePage : 0;
+  }
+
+  /** Stops the voice and clears the cached state, so Listen works at once. */
+  public static void stopNow(Context context) {
+    send(context, ACTION_STOP);
+    activeBook = "";
+    activeState = "stopped";
+    activePage = 0;
+  }
+
+  /** Re-sends the current page and line, used when the reader comes back. */
+  public static void syncNow(Context context) {
+    send(context, ACTION_SYNC);
+  }
+
+  /** Sends play, pause or stop from the reader screen. */
+  public static void pauseFor(Context context) {
+    send(context, ACTION_PAUSE);
+  }
+
+  public static void resumeFor(Context context) {
+    send(context, ACTION_RESUME);
+  }
+
+  /** Moves the voice to the first sentence of a page the reader turned to. */
+  public static void seekPage(Context context, int page) {
+    if (context == null || page < 1) return;
+    if (!"playing".equals(activeState) && !"paused".equals(activeState)
+        && !"preparing".equals(activeState)) {
+      return;
+    }
+    try {
+      context.startService(new Intent(context, AudioPlaybackService.class)
+          .setAction(ACTION_SEEK_PAGE)
+          .putExtra(EXTRA_SEEK_PAGE, page));
+    } catch (Exception ignored) {
+      /* the service is not running */
+    }
+  }
+
+  private static void send(Context context, String action) {
+    if (context == null) return;
+    try {
+      context.startService(new Intent(context, AudioPlaybackService.class).setAction(action));
+    } catch (Exception ignored) {
+      /* the service is not running */
+    }
   }
 
   /** Stops playback when the book is deleted. */
@@ -182,6 +244,17 @@ public class AudioPlaybackService extends Service {
       previous();
       return START_NOT_STICKY;
     }
+    if (ACTION_SEEK_PAGE.equals(action)) {
+      seekToPage(intent.getIntExtra(EXTRA_SEEK_PAGE, 0));
+      return START_NOT_STICKY;
+    }
+    if (ACTION_SYNC.equals(action)) {
+      if (prepared) {
+        notifyListener();
+        notifyHighlight();
+      }
+      return START_NOT_STICKY;
+    }
     if (ACTION_START.equals(action)) {
       begin(intent);
     }
@@ -205,6 +278,7 @@ public class AudioPlaybackService extends Service {
     generation++;
     activeBook = bookId;
     activeState = "preparing";
+    activePage = startPage;
     preparing = true;
     prepared = false;
     playing = false;
@@ -324,8 +398,8 @@ public class AudioPlaybackService extends Service {
   }
 
   private void extract(int gen) {
-    List<String> foundChunks = new ArrayList<>();
-    List<Integer> foundPages = new ArrayList<>();
+    List<List<AudioText.Line>> pageLines = new ArrayList<>();
+    List<float[]> sizes = new ArrayList<>();
     PDDocument document = null;
     try {
       PDFBoxResourceLoader.init(getApplicationContext());
@@ -341,14 +415,13 @@ public class AudioPlaybackService extends Service {
       }
       for (int page = 1; page <= count; page++) {
         if (gen != generation) return;
-        PDFTextStripper stripper = new PDFTextStripper();
+        PositionStripper stripper = new PositionStripper();
+        stripper.setSortByPosition(true);
         stripper.setStartPage(page);
         stripper.setEndPage(page);
-        String text = AudioText.cleanPage(stripper.getText(document));
-        for (String chunk : AudioText.chunks(text)) {
-          foundChunks.add(chunk);
-          foundPages.add(page);
-        }
+        stripper.getText(document);
+        pageLines.add(stripper.lines);
+        sizes.add(pageSize(document.getPage(page - 1)));
         if (page % 15 == 0) {
           final int done = page;
           main.post(() -> {
@@ -358,24 +431,93 @@ public class AudioPlaybackService extends Service {
           });
         }
       }
+
+      // Running heads, page numbers, then the title and copyright pages that
+      // free PDFs put in front of the book itself.
+      AudioText.stripRunningHeads(pageLines, sizes);
+      List<String> pageText = new ArrayList<>();
+      for (List<AudioText.Line> lines : pageLines) pageText.add(AudioText.join(lines));
+      int skip = AudioText.frontMatterPages(pageText);
+
+      List<AudioText.Chunk> foundChunks = new ArrayList<>();
+      List<Integer> foundPages = new ArrayList<>();
+      for (int page = skip; page < pageLines.size(); page++) {
+        for (AudioText.Chunk chunk : AudioText.chunks(pageLines.get(page))) {
+          foundChunks.add(chunk);
+          foundPages.add(page + 1);
+        }
+      }
+
+      final List<AudioText.Chunk> resultChunks = foundChunks;
+      final List<Integer> resultPages = foundPages;
+      final List<float[]> resultSizes = sizes;
+      main.post(() -> {
+        if (gen == generation) onPrepared(resultChunks, resultPages, resultSizes);
+      });
     } catch (Exception | LinkageError e) {
       Log.w("ShelfScoutAudio", "PDF text extraction failed", e);
       main.post(() -> {
         if (gen == generation) fail("This PDF has no readable text layer. OCR is not included yet.");
       });
-      return;
     } finally {
       try { if (document != null) document.close(); } catch (Exception ignored) { /* already closed */ }
     }
-
-    final List<String> resultChunks = foundChunks;
-    final List<Integer> resultPages = foundPages;
-    main.post(() -> {
-      if (gen == generation) onPrepared(resultChunks, resultPages);
-    });
   }
 
-  private void onPrepared(List<String> foundChunks, List<Integer> foundPages) {
+  private static float[] pageSize(PDPage page) {
+    float width = 595f;
+    float height = 842f;
+    try {
+      if (page.getMediaBox() != null) {
+        width = page.getMediaBox().getWidth();
+        height = page.getMediaBox().getHeight();
+      }
+    } catch (Exception ignored) {
+      /* malformed page box: keep A4 */
+    }
+    int rotation = (page.getRotation() + 360) % 360;
+    if (rotation == 90 || rotation == 270) {
+      float swap = width;
+      width = height;
+      height = swap;
+    }
+    if (width <= 0 || height <= 0) return new float[]{595f, 842f};
+    return new float[]{width, height};
+  }
+
+  /** Keeps the box of every line so the reader can mark what is being spoken. */
+  private static final class PositionStripper extends PDFTextStripper {
+    final List<AudioText.Line> lines = new ArrayList<>();
+
+    PositionStripper() throws IOException {
+      super();
+    }
+
+    @Override
+    protected void writeString(String text, List<TextPosition> positions) {
+      String tidy = AudioText.tidy(text);
+      if (tidy.isEmpty() || positions == null || positions.isEmpty()) return;
+
+      float left = Float.MAX_VALUE;
+      float top = Float.MAX_VALUE;
+      float right = -Float.MAX_VALUE;
+      float bottom = -Float.MAX_VALUE;
+      for (TextPosition position : positions) {
+        float height = position.getHeightDir();
+        if (height <= 0) height = position.getFontSizeInPt() > 0 ? position.getFontSizeInPt() : 10f;
+        float x = position.getXDirAdj();
+        left = Math.min(left, x);
+        right = Math.max(right, x + Math.max(position.getWidthDirAdj(), 0.5f));
+        top = Math.min(top, position.getYDirAdj() - height * 0.85f);
+        bottom = Math.max(bottom, position.getYDirAdj() + height * 0.20f);
+      }
+      if (right <= left || bottom <= top) return;
+      lines.add(new AudioText.Line(tidy, left, top, right, bottom));
+    }
+  }
+
+  private void onPrepared(List<AudioText.Chunk> foundChunks, List<Integer> foundPages,
+                          List<float[]> foundSizes) {
     if (!preparing) return;
     if (foundChunks.isEmpty()) {
       fail("This PDF is image-only. OCR is not included yet.");
@@ -385,6 +527,8 @@ public class AudioPlaybackService extends Service {
     chunks.addAll(foundChunks);
     pages.clear();
     pages.addAll(foundPages);
+    pageSizes.clear();
+    pageSizes.addAll(foundSizes);
     if (totalPages <= 0) totalPages = pages.get(pages.size() - 1);
     preparing = false;
     prepared = true;
@@ -427,14 +571,54 @@ public class AudioPlaybackService extends Service {
     params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
     tts.setSpeechRate(AudioText.styleRate(style) * speed);
     tts.setPitch(AudioText.stylePitch(style));
-    int result = tts.speak(chunks.get(index), TextToSpeech.QUEUE_FLUSH, params, utteranceId);
+    int result = tts.speak(chunks.get(index).text, TextToSpeech.QUEUE_FLUSH, params, utteranceId);
     if (result == TextToSpeech.ERROR) {
       fail("The offline voice could not start.");
       return;
     }
     activeState = "playing";
     updateForPage(true);
+    notifyHighlight();
     updateSession();
+  }
+
+  /** Moves the voice to the first sentence of a page the reader turned to. */
+  private void seekToPage(int page) {
+    if (page < 1) return;
+    startPage = page;
+    if (!prepared) return;
+
+    int target = pages.size() - 1;
+    for (int i = 0; i < pages.size(); i++) {
+      if (pages.get(i) >= page) {
+        target = i;
+        break;
+      }
+    }
+    if (target == index && playing) return;
+
+    generation++;
+    if (tts != null) tts.stop();
+    index = Math.max(0, target);
+    savePosition();
+    if (playing) {
+      speak();
+    } else {
+      updateForPage(false);
+      notifyHighlight();
+    }
+  }
+
+  private void notifyHighlight() {
+    if (listener == null || chunks.isEmpty()) return;
+    int safeIndex = Math.max(0, Math.min(index, chunks.size() - 1));
+    int page = currentPage();
+    if (page <= 0) return;
+    float[] size = page >= 1 && page <= pageSizes.size()
+        ? pageSizes.get(page - 1)
+        : new float[]{595f, 842f};
+    AudioText.Chunk chunk = chunks.get(safeIndex);
+    listener.onHighlight(page, AudioText.boxes(chunk), size[0], size[1], chunk.text);
   }
 
   private void pause() {
@@ -470,6 +654,7 @@ public class AudioPlaybackService extends Service {
       speak();
     } else {
       updateForPage(false);
+      notifyHighlight();
       updateSession();
     }
   }
@@ -484,6 +669,7 @@ public class AudioPlaybackService extends Service {
       speak();
     } else {
       updateForPage(false);
+      notifyHighlight();
       updateSession();
     }
   }
@@ -526,6 +712,7 @@ public class AudioPlaybackService extends Service {
     notifyListener(page, activeState);
     updateSession();
     activeBook = "";
+    activePage = 0;
     stopForeground(true);
     stopSelf();
   }
@@ -540,6 +727,7 @@ public class AudioPlaybackService extends Service {
     index = 0;
     chunks.clear();
     pages.clear();
+    pageSizes.clear();
     releaseWake();
     abandonFocus();
   }
@@ -601,6 +789,7 @@ public class AudioPlaybackService extends Service {
   }
 
   private void notifyListener(int page, String state) {
+    activePage = page;
     if (listener != null) listener.onProgress(page, totalPages, state);
   }
 

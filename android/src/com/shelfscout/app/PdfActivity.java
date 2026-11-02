@@ -9,8 +9,12 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.RectF;
+import android.graphics.drawable.Drawable;
 import android.graphics.pdf.PdfRenderer;
 import android.os.Build;
 import android.os.Bundle;
@@ -60,8 +64,16 @@ public class PdfActivity extends Activity {
 
   private PdfRenderer renderer;
   private ParcelFileDescriptor descriptor;
-  private ImageView image;
+  private PageView image;
   private TextView counter;
+  private TextView caption;
+  private int audioPage = -1;
+  private int highlightPage = -1;
+  private float[] highlightBoxes;
+  private float highlightWidth;
+  private float highlightHeight;
+  private boolean syncingPage;
+  private boolean loaded;
   private Button prev;
   private Button next;
   private Button listen;
@@ -85,9 +97,34 @@ public class PdfActivity extends Activity {
           else if ("preparing".equals(state)) listen.setText("Preparing...");
           else listen.setText("Listen");
         }
+        if (page > 0) audioPage = page;
         if (page > 0 && ("playing".equals(state) || "paused".equals(state)) && page - 1 != pageIndex) {
+          syncingPage = true;
           showPage(page - 1);
+          syncingPage = false;
         }
+        if ("idle".equals(state) || "stopped".equals(state) || "finished".equals(state)) {
+          audioPage = -1;
+          if (caption != null) caption.setVisibility(View.GONE);
+          if (image != null) image.clearHighlight();
+        }
+      });
+    }
+
+    @Override
+    public void onHighlight(int page, float[] boxes, float pageWidth, float pageHeight, String text) {
+      runOnUiThread(() -> {
+        highlightPage = page;
+        highlightBoxes = boxes;
+        highlightWidth = pageWidth;
+        highlightHeight = pageHeight;
+        if (caption != null && text != null && !text.trim().isEmpty()) {
+          String line = text.trim();
+          if (line.length() > 240) line = line.substring(0, 240) + "...";
+          caption.setText(line);
+          caption.setVisibility(View.VISIBLE);
+        }
+        if (page - 1 == pageIndex) applyHighlight();
       });
     }
 
@@ -95,6 +132,8 @@ public class PdfActivity extends Activity {
     public void onError(String message) {
       runOnUiThread(() -> {
         if (listen != null) listen.setText("Listen");
+        if (caption != null) caption.setVisibility(View.GONE);
+        if (image != null) image.clearHighlight();
         Toast.makeText(PdfActivity.this, message, Toast.LENGTH_LONG).show();
       });
     }
@@ -150,13 +189,23 @@ public class PdfActivity extends Activity {
 
     FrameLayout area = new FrameLayout(this);
     area.setBackgroundColor(Color.parseColor("#0C0A08"));
-    image = new ImageView(this);
+    image = new PageView(this);
     image.setAdjustViewBounds(true);
     image.setScaleType(ImageView.ScaleType.FIT_CENTER);
     area.addView(image, new FrameLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     root.addView(area, new LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+    // The sentence the voice is on, under the marked lines.
+    caption = new TextView(this);
+    caption.setTextColor(Color.parseColor("#C9B79B"));
+    caption.setTextSize(12);
+    caption.setMaxLines(2);
+    caption.setEllipsize(TextUtils.TruncateAt.END);
+    caption.setPadding(dp(16), dp(4), dp(16), dp(4));
+    caption.setVisibility(View.GONE);
+    root.addView(caption);
 
     LinearLayout foot = new LinearLayout(this);
     foot.setGravity(Gravity.CENTER);
@@ -237,6 +286,7 @@ public class PdfActivity extends Activity {
         reading.edit().putInt(positionKey + "_pages", count).apply();
         int saved = reading.getInt(positionKey, 0);
         showPage(Math.max(0, Math.min(saved, count - 1)));
+        loaded = true;
         if (listenPending) {
           listenPending = false;
           showListenDialog();
@@ -318,6 +368,24 @@ public class PdfActivity extends Activity {
     counter.setContentDescription("Page " + (index + 1) + " of " + count + ". Tap to jump to a page.");
     prev.setEnabled(index > 0);
     next.setEnabled(index < count - 1);
+    applyHighlight();
+
+    // A page the reader turned to moves the voice to that page, instead of
+    // leaving it reading the page it started on.
+    if (!syncingPage && loaded && audioPage > 0 && audioPage != index + 1
+        && AudioPlaybackService.isActiveFor(bookId)) {
+      AudioPlaybackService.seekPage(this, index + 1);
+    }
+  }
+
+  private void applyHighlight() {
+    if (image == null) return;
+    if (highlightBoxes != null && highlightPage == pageIndex + 1
+        && highlightWidth > 0 && highlightHeight > 0) {
+      image.setHighlight(highlightBoxes, highlightWidth, highlightHeight);
+    } else {
+      image.clearHighlight();
+    }
   }
 
   /** The page counter is a button: tap it and type a page to jump there. */
@@ -403,16 +471,31 @@ public class PdfActivity extends Activity {
   }
 
   private void showActiveDialog() {
-    int page = reading.getInt(positionKey, pageIndex) + 1;
     String state = AudioPlaybackService.stateFor(bookId);
-    String label = "preparing".equals(state) ? "preparing the text"
+    boolean running = "playing".equals(state) || "preparing".equals(state);
+    int page = Math.max(1, audioPage > 0 ? audioPage : reading.getInt(positionKey, pageIndex) + 1);
+    String label = "preparing".equals(state) ? "still preparing the text"
         : ("paused".equals(state) ? "paused" : "playing");
-    new AlertDialog.Builder(this)
+
+    AlertDialog.Builder dialog = new AlertDialog.Builder(this)
         .setTitle("Reading aloud")
-        .setMessage("The offline voice is " + label + " on page " + page + ".")
-        .setPositiveButton("Stop", (dialog, which) -> stopListening())
-        .setNegativeButton("Close", null)
-        .show();
+        .setMessage("The offline voice is " + label + " on page " + page
+            + ". You can pause it here or stop it and start again.")
+        .setNegativeButton("Stop", (view, which) -> stopListening());
+
+    if ("preparing".equals(state)) {
+      dialog.setPositiveButton("Stop preparing", (view, which) -> stopListening());
+    } else {
+      dialog.setPositiveButton(running ? "Pause" : "Resume", (view, which) -> {
+        if (running) AudioPlaybackService.pauseFor(this);
+        else AudioPlaybackService.resumeFor(this);
+      });
+      dialog.setNeutralButton("Change voice", (view, which) -> {
+        stopListening();
+        new android.os.Handler(getMainLooper()).postDelayed(this::showListenDialog, 500);
+      });
+    }
+    dialog.show();
   }
 
   private void showVoiceDialog(List<Voice> voices, String defaultName) {
@@ -532,10 +615,13 @@ public class PdfActivity extends Activity {
   }
 
   private void stopListening() {
-    Intent intent = new Intent(this, AudioPlaybackService.class);
-    intent.setAction(AudioPlaybackService.ACTION_STOP);
-    startService(intent);
+    AudioPlaybackService.stopNow(this);
+    audioPage = -1;
+    highlightPage = -1;
+    highlightBoxes = null;
     if (listen != null) listen.setText("Listen");
+    if (caption != null) caption.setVisibility(View.GONE);
+    if (image != null) image.clearHighlight();
   }
 
   private void showVoiceError(String message) {
@@ -584,8 +670,16 @@ public class PdfActivity extends Activity {
       String state = AudioPlaybackService.stateFor(bookId);
       listen.setText("playing".equals(state) ? "Listening"
           : ("preparing".equals(state) ? "Preparing..." : "Paused"));
+      int playing = AudioPlaybackService.pageFor(bookId);
+      if (playing > 0) audioPage = playing;
       int saved = reading.getInt(positionKey, pageIndex);
-      if (saved != pageIndex) showPage(saved);
+      if (saved != pageIndex) {
+        syncingPage = true;
+        showPage(saved);
+        syncingPage = false;
+      }
+      // Ask for the current line so the marker is there straight away.
+      AudioPlaybackService.syncNow(this);
     }
   }
 
@@ -607,6 +701,63 @@ public class PdfActivity extends Activity {
       pageBitmap = null;
     }
     super.onDestroy();
+  }
+
+  /** The page bitmap with a warm marker over the lines the voice is reading. */
+  private static final class PageView extends ImageView {
+    private final Paint shade = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final RectF box = new RectF();
+    private final RectF mapped = new RectF();
+    private final Matrix matrix = new Matrix();
+    private float[] boxes;
+    private float pageWidth;
+    private float pageHeight;
+
+    PageView(Context context) {
+      super(context);
+      shade.setColor(Color.parseColor("#40E0A458"));
+      edge.setColor(Color.parseColor("#D9D9A15C"));
+    }
+
+    void setHighlight(float[] boxes, float pageWidth, float pageHeight) {
+      this.boxes = boxes;
+      this.pageWidth = pageWidth;
+      this.pageHeight = pageHeight;
+      invalidate();
+    }
+
+    void clearHighlight() {
+      if (boxes == null) return;
+      boxes = null;
+      invalidate();
+    }
+
+    @Override
+    protected void onDraw(Canvas canvas) {
+      super.onDraw(canvas);
+      if (boxes == null || boxes.length < 4 || pageWidth <= 0 || pageHeight <= 0) return;
+      Drawable drawable = getDrawable();
+      if (drawable == null) return;
+      int width = drawable.getIntrinsicWidth();
+      int height = drawable.getIntrinsicHeight();
+      if (width <= 0 || height <= 0) return;
+
+      float scaleX = width / pageWidth;
+      float scaleY = height / pageHeight;
+      matrix.set(getImageMatrix());
+
+      for (int i = 0; i + 3 < boxes.length; i += 4) {
+        box.set(boxes[i] * scaleX, boxes[i + 1] * scaleY,
+            boxes[i + 2] * scaleX, boxes[i + 3] * scaleY);
+        box.inset(-scaleX * 2f, -scaleY * 1.5f);
+        mapped.set(box);
+        matrix.mapRect(mapped);
+        canvas.drawRoundRect(mapped, 3f, 3f, shade);
+        canvas.drawRect(mapped.left, mapped.top,
+            mapped.left + Math.max(2f, scaleX * 2f), mapped.bottom, edge);
+      }
+    }
   }
 
   /* ---------------- cache ---------------- */
