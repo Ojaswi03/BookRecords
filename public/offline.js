@@ -250,13 +250,16 @@ window.ShelfOffline = (function () {
       isbn: record.isbn || "",
       title,
       authors: record.authors && record.authors.length ? record.authors : ["Unknown author"],
-      genre: GENRES.indexOf(record.genre) !== -1 ? record.genre : classify(subjects, title),
+      genre: record.genre ? String(record.genre).slice(0, 60) : classify(subjects, title),
       year: record.year || "",
       publisher: record.publisher || "",
       pages: record.pages || null,
       cover: record.cover || generatedCover(title, (record.authors || [])[0]),
       subjects,
       source: record.source || "Manual entry",
+      loanedTo: record.loanedTo || "",
+      loanedAt: record.loanedAt || "",
+      dueAt: record.dueAt || "",
       addedAt: new Date().toISOString(),
       count: 1,
     };
@@ -267,7 +270,7 @@ window.ShelfOffline = (function () {
       ...book,
       id: book.id || uid(),
       authors: book.authors && book.authors.length ? book.authors : ["Unknown author"],
-      genre: GENRES.indexOf(book.genre) !== -1 ? book.genre : "Other",
+      genre: book.genre || "Other",
       subjects: book.subjects || [],
       count: Math.max(1, Number(book.count) || 1),
     };
@@ -313,6 +316,43 @@ window.ShelfOffline = (function () {
       const extra = used.filter((g, i) => GENRES.indexOf(g) === -1 && used.indexOf(g) === i)
         .sort((a, b) => a.localeCompare(b));
       return { genres: GENRES.concat(extra) };
+    }
+
+    if (method === "GET" && path === "/api/export") {
+      return { app: "ShelfScout", version: 1, exportedAt: new Date().toISOString(), books };
+    }
+
+    if (method === "POST" && path === "/api/import") {
+      const incoming = Array.isArray(body.books) ? body.books : [];
+      const byId = new Set(books.map((b) => b.id));
+      const byKey = new Set(books.map((b) => `${b.isbn || ""}|${String(b.title || "").toLowerCase()}`));
+      const next = books.slice();
+      let added = 0;
+      let skipped = 0;
+      for (const raw of incoming) {
+        if (!raw || !String(raw.title || "").trim()) {
+          skipped += 1;
+          continue;
+        }
+        const key = `${raw.isbn || ""}|${String(raw.title).toLowerCase()}`;
+        if (byKey.has(key) || (raw.id && byId.has(String(raw.id)))) {
+          skipped += 1;
+          continue;
+        }
+        const book = normalize({
+          ...raw,
+          id: raw.id && !byId.has(String(raw.id)) ? String(raw.id) : uid(),
+          title: String(raw.title).trim(),
+          count: Math.max(1, Math.trunc(Number(raw.count) || 1)),
+          addedAt: raw.addedAt || new Date().toISOString(),
+        });
+        next.push(book);
+        byId.add(book.id);
+        byKey.add(key);
+        added += 1;
+      }
+      if (added) writeBooks(next);
+      return { added, skipped, total: next.length };
     }
 
     if (method === "GET" && path.indexOf("/api/lookup") === 0) {
@@ -420,6 +460,16 @@ window.ShelfOffline = (function () {
         const count = Number(body.count);
         if (Number.isFinite(count) && count >= 1) patch.count = Math.trunc(count);
       }
+      if (typeof body.loanedTo === "string") {
+        const who = body.loanedTo.trim().slice(0, 80);
+        patch.loanedTo = who;
+        if (!who) {
+          patch.loanedAt = "";
+          patch.dueAt = "";
+        }
+      }
+      if (typeof body.loanedAt === "string") patch.loanedAt = body.loanedAt.trim().slice(0, 10);
+      if (typeof body.dueAt === "string") patch.dueAt = body.dueAt.trim().slice(0, 10);
       books[idx] = { ...books[idx], ...patch, editedAt: new Date().toISOString() };
       writeBooks(books);
       return { book: books[idx] };

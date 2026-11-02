@@ -465,6 +465,9 @@ function makeBook(record) {
     pages: record.pages ?? null,
     source: record.source || "Manual entry",
     count: 1,
+    loanedTo: record.loanedTo || "",
+    loanedAt: record.loanedAt || "",
+    dueAt: record.dueAt || "",
     addedAt: new Date().toISOString(),
   };
 }
@@ -535,7 +538,7 @@ function readBody(req) {
     let data = "";
     req.on("data", (chunk) => {
       data += chunk;
-      if (data.length > 1e6) {
+      if (data.length > 1e7) {
         reject(new Error("Payload too large"));
         req.destroy();
       }
@@ -631,6 +634,56 @@ async function handleAPI(req, res, pathname) {
   // GET /api/genres
   if (req.method === "GET" && pathname === "/api/genres") {
     return sendJSON(res, 200, { genres: allGenres() });
+  }
+
+  // GET /api/export - the whole library in one file
+  if (req.method === "GET" && pathname === "/api/export") {
+    return sendJSON(res, 200, {
+      app: "ShelfScout",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      books: loadBooks(),
+    });
+  }
+
+  // POST /api/import { books } - restore a backup. Books already in the library
+  // are skipped, so importing the same file twice changes nothing.
+  if (req.method === "POST" && pathname === "/api/import") {
+    const body = await readBody(req);
+    const incoming = Array.isArray(body.books) ? body.books : Array.isArray(body) ? body : [];
+    const books = loadBooks();
+    const ids = new Set(books.map((b) => b.id).filter(Boolean));
+    const keys = new Set(books.map((b) => `${b.isbn || ""}|${String(b.title || "").toLowerCase()}`));
+    let added = 0;
+    let skipped = 0;
+
+    for (const raw of incoming) {
+      if (!raw || !String(raw.title || "").trim()) {
+        skipped += 1;
+        continue;
+      }
+      const key = `${raw.isbn || ""}|${String(raw.title).toLowerCase()}`;
+      if (keys.has(key) || (raw.id && ids.has(String(raw.id)))) {
+        skipped += 1;
+        continue;
+      }
+      const book = {
+        ...makeBook(raw),
+        id: raw.id && !ids.has(String(raw.id)) ? String(raw.id) : crypto.randomUUID(),
+        title: String(raw.title).trim(),
+        count: Math.max(1, Math.trunc(Number(raw.count) || 1)),
+        cover: typeof raw.cover === "string" ? raw.cover : "",
+        addedAt: raw.addedAt || new Date().toISOString(),
+      };
+      books.push(book);
+      ids.add(book.id);
+      keys.add(key);
+      added += 1;
+    }
+
+    saveBooks(books);
+    if (added) broadcast("library", { reason: "imported", count: added, origin });
+    return sendJSON(res, 200, { added, skipped, total: books.length });
   }
 
   // GET /api/lookup?isbn=... - details only, without adding the book. Used by
@@ -792,6 +845,18 @@ async function handleAPI(req, res, pathname) {
       const count = Number(body.count);
       if (Number.isFinite(count) && count >= 1) patch.count = Math.trunc(count);
     }
+    // Loan tracker. Clearing the borrower also clears the dates, which is what
+    // "mark returned" does.
+    if (typeof body.loanedTo === "string") {
+      const who = body.loanedTo.trim().slice(0, 80);
+      patch.loanedTo = who;
+      if (!who) {
+        patch.loanedAt = "";
+        patch.dueAt = "";
+      }
+    }
+    if (typeof body.loanedAt === "string") patch.loanedAt = body.loanedAt.trim().slice(0, 10);
+    if (typeof body.dueAt === "string") patch.dueAt = body.dueAt.trim().slice(0, 10);
     books[idx] = { ...book, ...patch, editedAt: new Date().toISOString() };
     saveBooks(books);
     broadcast("library", { reason: "edited", book: books[idx], origin });

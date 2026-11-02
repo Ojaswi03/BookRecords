@@ -27,7 +27,7 @@ Ports: 8420 is the app, 8421 is the loopback mirror ngrok forwards to, 4040 is n
 
 | You changed | Run | Where it appears |
 | --- | --- | --- |
-| `public/index.html`, `styles.css`, `app.js`, `offline.js`, `sw.js`, `manifest.webmanifest` | Nothing. For the standalone phone app: `npm run apk` | Browser and installed desktop app on reload. Phone app only after reinstalling the APK. |
+| `public/index.html`, `styles.css`, `app.js`, `offline.js`, `covercache.js`, `sw.js`, `manifest.webmanifest` | Nothing. For the standalone phone app: `npm run apk` | Browser and installed desktop app on reload. Phone app only after reinstalling the APK. |
 | `server.js` | Restart: `Ctrl+C`, then `npm start` | Every connected device. |
 | `public/icons/*` | `npm run icons`, then `npm run apk` | PWA and APK. |
 | `android/AndroidManifest.xml`, `android/src/**`, app name or icon | `npm run apk` (or `npm run release` to publish) | APK only. |
@@ -62,6 +62,18 @@ Users can also update by rebuilding from source: `npm run apk`, then install ove
 ## Data
 
 The server library is `data/library.json`. The phone app keeps its books in the WebView local storage. With no server, each device has its own shelf; with the server running, every device syncs live.
+
+## Backup and restore
+
+Use the **Backup** button to save the library as JSON (covers included) or as CSV for a spreadsheet. Restoring reads a JSON backup and adds the books it does not already have, so importing the same file twice changes nothing.
+
+On the phone the file is written to `Downloads/ShelfScout/`. In a browser or the desktop app it goes to your normal download folder. Copy the JSON to the other device and import it there to move a phone library to the computer with no server.
+
+## Loans
+
+Open a book and fill in **Lent to** and, if you want, **Due back**. The book keeps its shelf position, and its row shows who has it and the due date. **Mark returned** clears the loan.
+
+Covers are cached on each device after they first load, so the shelf still shows them with no internet. Covers uploaded from a file are stored small to keep the library file lean.
 
 ## Licence and legal
 

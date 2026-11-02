@@ -33,6 +33,7 @@
       <div class="actions">
         <button id="scanBtn" class="btn primary">Scan barcode</button>
         <button id="manualBtn" class="btn ghost">Add manually</button>
+        <button id="dataBtn" class="btn ghost">Backup</button>
       </div>
 
       <div class="controls">
@@ -139,10 +140,35 @@
     </div>
   </div>
 
+  <!-- Backup / restore modal -->
+  <div class="modal hidden" id="dataModal" role="dialog" aria-modal="true" aria-label="Backup and restore">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Backup and restore</h2>
+        <button class="icon-btn" id="dataClose" aria-label="Close">×</button>
+      </div>
+      <p class="hint">Save the whole library to a file, or move it to another device. Covers are included in the JSON file.</p>
+      <div class="banner-actions">
+        <button class="btn primary" id="exportJson">Save JSON backup</button>
+        <button class="btn ghost" id="exportCsv">Save CSV for a spreadsheet</button>
+      </div>
+      <hr class="rule">
+      <label class="file-label">Restore from a JSON backup
+        <input type="file" id="importFile" accept=".json,application/json">
+      </label>
+      <p class="hint" id="importHint"></p>
+      <div class="banner-actions">
+        <button class="btn" id="importBtn" disabled>Add books from this file</button>
+      </div>
+      <p class="detail-meta" id="dataMeta"></p>
+    </div>
+  </div>
+
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 
   <script src="vendor/qrcode.js"></script>
   <script src="vendor/zxing.min.js"></script>
+  <script src="covercache.js"></script>
   <script src="offline.js"></script>
   <script src="app.js"></script>
   <script src="update.js"></script>

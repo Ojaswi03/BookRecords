@@ -1038,6 +1038,65 @@ body {
   vertical-align: middle;
 }
 
+/* ------------------------------------------------------------------
+ * Loan tracker
+ * ------------------------------------------------------------------ */
+
+.loan-line {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+.loan-fieldset {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 240, 220, 0.02);
+}
+.loan-fieldset legend {
+  padding: 0 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.loan-fieldset .banner-actions { margin-top: 0; }
+.loan-fieldset .btn { flex: 0 0 auto; }
+
+/* ------------------------------------------------------------------
+ * Backup and restore
+ * ------------------------------------------------------------------ */
+
+.rule {
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  margin: 18px 0;
+}
+
+.file-label {
+  display: grid;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.file-label input[type="file"] {
+  width: 100%;
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: rgba(255, 240, 220, 0.03);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+}
+
 .confirm-box {
   margin-top: 14px;
   padding: 14px;

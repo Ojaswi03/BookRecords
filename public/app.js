@@ -97,10 +97,33 @@ function normalizeGenre(g) {
 
 function matches(b, q) {
   if (!q) return true;
-  const hay = [b.title, (b.authors || []).join(" "), b.genre, b.isbn, (b.subjects || []).join(" ")]
+  const hay = [b.title, (b.authors || []).join(" "), b.genre, b.isbn, b.loanedTo, (b.subjects || []).join(" ")]
     .join(" ")
     .toLowerCase();
   return hay.includes(q);
+}
+
+// Covers are cached on the device; fall back to the remote URL when not.
+function coverSrc(url) {
+  return window.CoverCache ? CoverCache.src(url) : (url || "");
+}
+
+function shortDate(value) {
+  const d = new Date(value);
+  return isNaN(d) ? String(value || "") : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+// <input type="date"> only accepts yyyy-mm-dd.
+function dateValue(value) {
+  const d = value ? new Date(value) : null;
+  if (!d || isNaN(d)) return "";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function loanLine(b) {
+  if (!b.loanedTo) return "";
+  const due = b.dueAt ? ` · due ${esc(shortDate(b.dueAt))}` : "";
+  return `<p class="loan-line">On loan to ${esc(b.loanedTo)}${due}</p>`;
 }
 
 // The exact order books appear on screen, so placement advice matches the view.
@@ -132,8 +155,9 @@ function rowHTML(b) {
   // Genre first: it's what the shelf is organised by, so it survives truncation
   // on narrow phone rows.
   const sub = [b.genre, b.year, b.isbn ? `ISBN ${b.isbn}` : ""].filter(Boolean).join(" · ");
-  const thumb = b.cover
-    ? `<img src="${esc(b.cover)}" alt="" loading="lazy" onerror="this.remove()">`
+  const cover = coverSrc(b.cover);
+  const thumb = cover
+    ? `<img src="${esc(cover)}" alt="" loading="lazy" onerror="this.remove()">`
     : "📖";
   return `<article class="row" data-id="${b.id}">
     <div class="idx">${rank}</div>
@@ -142,6 +166,7 @@ function rowHTML(b) {
       <h3>${esc(b.title)}${(b.count || 1) > 1 ? ` <span class="count-badge">×${b.count}</span>` : ""}</h3>
       <p class="author">${esc(author)}</p>
       <p class="sub">${esc(sub)}</p>
+      ${loanLine(b)}
     </div>
     <button class="del" data-del="${b.id}" aria-label="Remove ${esc(b.title)}" title="Remove">×</button>
   </article>`;
@@ -252,7 +277,7 @@ function renderBanner() {
     <button class="icon-btn" data-banner-close aria-label="Close">×</button>
     <div class="banner-top">
       ${b.cover
-        ? `<img class="cover" src="${esc(b.cover)}" alt="Cover of ${esc(b.title)}" onerror="this.remove()">`
+        ? `<img class="cover" src="${esc(coverSrc(b.cover))}" alt="Cover of ${esc(b.title)}" onerror="this.remove()">`
         : `<div class="cover"></div>`}
       <div>
         <span class="pill ${phase === "added" || phase === "addedCopy" ? "ok" : "warn"}">${esc(pillText(phase, count))}</span>
@@ -404,6 +429,7 @@ async function reload(highlightId, phase) {
   state.highlightId = highlightId;
   state.banner = { id: highlightId, phase: phase || "added" };
   render();
+  if (window.CoverCache) CoverCache.warm(state.books.map((b) => b.cover));
 }
 
 /* ------------------------------------------------------------------ *
@@ -481,7 +507,7 @@ function setManualPreview(book) {
   const img = $("#mCover");
   if (img) {
     if (book.cover) {
-      img.src = book.cover;
+      img.src = coverSrc(book.cover);
       img.classList.remove("hidden");
     } else {
       img.removeAttribute("src");
@@ -588,7 +614,7 @@ function openManual(prefill = {}) {
 }
 
 // Downscale an uploaded image so it fits in the library file.
-function toCoverDataURL(file, max = 700) {
+function toCoverDataURL(file, max = 480) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error("read failed"));
@@ -603,12 +629,130 @@ function toCoverDataURL(file, max = 700) {
         canvas.width = w;
         canvas.height = h;
         canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL("image/jpeg", 0.82));
+        resolve(canvas.toDataURL("image/jpeg", 0.75));
       };
       img.src = String(reader.result);
     };
     reader.readAsDataURL(file);
   });
+}
+
+/* ------------------------------------------------------------------ *
+ * Backup and restore
+ * ------------------------------------------------------------------ */
+
+function stamp() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function booksToJSON() {
+  return JSON.stringify({ app: "ShelfScout", version: 1, exportedAt: new Date().toISOString(), books: state.books }, null, 2);
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+// Spreadsheet copy. Uploaded covers are data URLs and would make the file huge,
+// so they are described here - the JSON backup keeps them.
+function booksToCSV() {
+  const head = ["Title", "Author(s)", "Genre", "ISBN", "Year", "Publisher", "Pages", "Copies", "Loaned to", "Loaned on", "Due back", "Subjects", "Cover", "Source", "Added"];
+  const rows = state.books.map((b) => [
+    b.title,
+    (b.authors || []).join(", "),
+    b.genre,
+    b.isbn,
+    b.year,
+    b.publisher,
+    b.pages || "",
+    b.count || 1,
+    b.loanedTo || "",
+    String(b.loanedAt || "").slice(0, 10),
+    String(b.dueAt || "").slice(0, 10),
+    (b.subjects || []).join(", "),
+    String(b.cover || "").startsWith("data:") ? "uploaded image" : b.cover || "",
+    b.source || "",
+    String(b.addedAt || "").slice(0, 10),
+  ]);
+  return [head, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
+// The Android app exposes a bridge that writes into Downloads; browsers and the
+// desktop app use a normal download.
+function saveFile(name, text, mime) {
+  const bridge = window.ShelfApp;
+  if (bridge && typeof bridge.saveFile === "function") {
+    const where = bridge.saveFile(name, text);
+    if (where) {
+      toast(`Saved to ${where}`);
+      return;
+    }
+  }
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`Saved ${name}`);
+}
+
+let pendingImport = [];
+
+function openData() {
+  pendingImport = [];
+  $("#importFile").value = "";
+  $("#importHint").textContent = "";
+  $("#importBtn").disabled = true;
+  const n = state.books.length;
+  $("#dataMeta").textContent = `${n} book${n === 1 ? "" : "s"} in this library · covers are included in the JSON file`;
+  $("#dataModal").classList.remove("hidden");
+}
+
+async function readImportFile(file) {
+  const hint = $("#importHint");
+  pendingImport = [];
+  $("#importBtn").disabled = true;
+  try {
+    const parsed = JSON.parse(await file.text());
+    const list = Array.isArray(parsed) ? parsed : parsed.books;
+    if (!Array.isArray(list)) throw new Error("no books");
+    pendingImport = list.filter((b) => b && String(b.title || "").trim());
+    if (!pendingImport.length) throw new Error("no books");
+    hint.textContent = `${pendingImport.length} book${pendingImport.length === 1 ? "" : "s"} found. Books already on the shelf are skipped.`;
+    $("#importBtn").disabled = false;
+  } catch {
+    hint.textContent = "That file is not a ShelfScout JSON backup.";
+  }
+}
+
+async function runImport() {
+  if (!pendingImport.length) return;
+  const btn = $("#importBtn");
+  btn.disabled = true;
+  try {
+    const data = await api("/api/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ books: pendingImport }),
+    });
+    state.books = (await api("/api/books")).books;
+    await refreshGenres();
+    render();
+    if (window.CoverCache) CoverCache.warm(state.books.map((b) => b.cover));
+    $("#importHint").textContent = `Added ${data.added} book${data.added === 1 ? "" : "s"}`
+      + (data.skipped ? `, skipped ${data.skipped} already on the shelf` : "") + ".";
+    pendingImport = [];
+    $("#importFile").value = "";
+    toast(`Restored ${data.added} book${data.added === 1 ? "" : "s"}.`);
+  } catch (err) {
+    toast(err.message, true);
+    btn.disabled = false;
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -667,6 +811,7 @@ function openDetail(id) {
   const b = state.books.find((x) => x.id === id);
   if (!b) return;
   state.detailId = id;
+  state.detailCover = null;
 
   const all = sortedAll();
   const order = displayOrder(all);
@@ -682,7 +827,7 @@ function openDetail(id) {
     <div class="detail-top">
       <div class="detail-cover-wrap" id="coverPick" role="button" tabindex="0" title="Click to change the cover">
         <img class="detail-cover${b.cover ? "" : " hidden"}" id="detailCoverImg" alt="Cover of ${esc(b.title)}"
-             ${b.cover ? `src="${esc(b.cover)}"` : ""} onerror="this.classList.add('hidden')">
+             ${b.cover ? `src="${esc(coverSrc(b.cover))}"` : ""} onerror="this.classList.add('hidden')">
         <div class="detail-cover${b.cover ? " hidden" : ""}" id="coverEmpty">📖</div>
         <span class="cover-edit">Change cover</span>
       </div>
@@ -711,6 +856,16 @@ function openDetail(id) {
         <label>Pages <input id="dPages" inputmode="numeric" value="${b.pages ?? ""}"></label>
         <label>Copies <input id="dCount" inputmode="numeric" min="1" value="${b.count || 1}"></label>
       </div>
+      <fieldset class="loan-fieldset">
+        <legend>On loan</legend>
+        <div class="grid2">
+          <label>Lent to <input id="dLoanedTo" value="${esc(b.loanedTo || "")}" placeholder="Name"></label>
+          <label>Due back <input id="dDueAt" type="date" value="${dateValue(b.dueAt)}"></label>
+        </div>
+        <label>Lent on <input id="dLoanedAt" type="date" value="${dateValue(b.loanedAt)}"></label>
+        <p class="hint">Leave "Lent to" empty to mark the book as back on the shelf.</p>
+        ${b.loanedTo ? `<div class="banner-actions"><button class="btn ghost" type="button" data-return="${b.id}">Mark returned</button></div>` : ""}
+      </fieldset>
       <label>Cover image URL
         <input id="dCover" value="${b.cover && !String(b.cover).startsWith("data:") ? esc(b.cover) : ""}"
                placeholder="${b.cover && String(b.cover).startsWith("data:") ? "Using the uploaded image" : "https://example.com/cover.jpg"}">
@@ -772,6 +927,7 @@ $("#detailBody").addEventListener("submit", async (e) => {
   e.preventDefault();
   const id = state.detailId;
   if (!id) return;
+  const current = state.books.find((b) => b.id === id) || {};
   try {
     await api(`/api/books/${id}`, {
       method: "PUT",
@@ -779,7 +935,7 @@ $("#detailBody").addEventListener("submit", async (e) => {
       body: JSON.stringify({
         title: $("#dTitle").value,
         author: $("#dAuthor").value,
-        genre: genreValue("dGenre", "dGenreNew") || genre,
+        genre: genreValue("dGenre", "dGenreNew") || current.genre || "",
         isbn: $("#dIsbn").value,
         year: $("#dYear").value,
         publisher: $("#dPublisher").value,
@@ -787,6 +943,9 @@ $("#detailBody").addEventListener("submit", async (e) => {
         count: $("#dCount").value,
         cover: state.detailCover || $("#dCover").value,
         subjects: $("#dSubjects").value.split(",").map((s) => s.trim()).filter(Boolean),
+        loanedTo: $("#dLoanedTo").value,
+        loanedAt: $("#dLoanedAt").value,
+        dueAt: $("#dDueAt").value,
       }),
     });
     state.books = (await api("/api/books")).books;
@@ -805,8 +964,27 @@ function closeDetail() {
 }
 
 $("#detailClose").addEventListener("click", closeDetail);
-$("#detailBody").addEventListener("click", (e) => {
-  if (e.target.closest("[data-detail-close]")) closeDetail();
+$("#detailBody").addEventListener("click", async (e) => {
+  if (e.target.closest("[data-detail-close]")) {
+    closeDetail();
+    return;
+  }
+  const back = e.target.closest("[data-return]");
+  if (!back) return;
+  const id = back.getAttribute("data-return");
+  try {
+    await api(`/api/books/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loanedTo: "", loanedAt: "", dueAt: "" }),
+    });
+    state.books = (await api("/api/books")).books;
+    render();
+    openDetail(id);
+    toast("Marked as returned to the shelf.");
+  } catch (err) {
+    toast(err.message, true);
+  }
 });
 
 /* ------------------------------------------------------------------ *
@@ -825,6 +1003,9 @@ async function init() {
   state.books = books.books || [];
   state.genres = genres.genres || [];
 
+  // Covers stored on this device are used first, so the shelf works offline.
+  if (window.CoverCache) await CoverCache.load();
+
   $("#mGenre").innerHTML = `<option value="">Detect from the book</option>`
     + state.genres.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("")
     + `<option value="__new">+ Add a new genre</option>`;
@@ -834,6 +1015,7 @@ async function init() {
   initQR(urls);
   initLive();
   registerServiceWorker();
+  if (window.CoverCache) CoverCache.warm(state.books.map((b) => b.cover));
 }
 
 $("#scanBtn").addEventListener("click", openScanner);
@@ -888,6 +1070,16 @@ $("#manualForm").addEventListener("submit", async (e) => {
     toast(err.message, true);
   }
 });
+
+$("#dataBtn").addEventListener("click", openData);
+$("#dataClose").addEventListener("click", () => $("#dataModal").classList.add("hidden"));
+$("#exportJson").addEventListener("click", () => saveFile(`shelfscout-${stamp()}.json`, booksToJSON(), "application/json"));
+$("#exportCsv").addEventListener("click", () => saveFile(`shelfscout-${stamp()}.csv`, booksToCSV(), "text/csv"));
+$("#importFile").addEventListener("change", (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (file) readImportFile(file);
+});
+$("#importBtn").addEventListener("click", runImport);
 
 $("#search").addEventListener("input", (e) => {
   state.query = e.target.value.trim().toLowerCase();
@@ -966,6 +1158,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   closeScanner();
   $("#manualModal").classList.add("hidden");
+  $("#dataModal").classList.add("hidden");
 });
 
 let installPrompt = null;

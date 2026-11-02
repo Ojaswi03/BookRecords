@@ -2,6 +2,7 @@ package com.shelfscout.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
@@ -11,6 +12,8 @@ import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -23,6 +26,7 @@ import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
+import android.webkit.ValueCallback;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
@@ -32,8 +36,12 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 
 /**
  * ShelfScout for Android.
@@ -48,6 +56,10 @@ public class MainActivity extends Activity {
   private static final String PREFS = "shelfscout";
   private static final String KEY_URL = "server_url";
   private static final int MATCH = ViewGroup.LayoutParams.MATCH_PARENT;
+  private static final int FILE_PICK = 9;
+
+  // Wanted by the backup screen when it imports a JSON file.
+  private ValueCallback<Uri[]> fileCallback;
 
   // Fake https host backed by assets/www. Using https (not file://) keeps the
   // page a secure context, which getUserMedia requires for the barcode camera.
@@ -200,9 +212,10 @@ public class MainActivity extends Activity {
     settings.setUseWideViewPort(true);
     settings.setLoadWithOverviewMode(true);
     settings.setAllowFileAccess(false);
-    settings.setUserAgentString(settings.getUserAgentString() + " ShelfScout/1.3");
+    settings.setUserAgentString(settings.getUserAgentString() + " ShelfScout/1.5");
 
-    // The web app reads this to compare itself with the latest GitHub release.
+    // The web app reads the installed version here and saves backups through
+    // saveFile().
     web.addJavascriptInterface(new VersionBridge(), "ShelfApp");
 
     // A tapped APK link must leave the WebView and go to the browser.
@@ -224,6 +237,20 @@ public class MainActivity extends Activity {
             request.deny();
           }
         });
+      }
+
+      // Without this the <input type="file"> in the backup screen does nothing.
+      @Override
+      public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
+        if (fileCallback != null) fileCallback.onReceiveValue(null);
+        fileCallback = callback;
+        try {
+          startActivityForResult(params.createIntent(), FILE_PICK);
+          return true;
+        } catch (Exception e) {
+          fileCallback = null;
+          return false;
+        }
       }
     });
 
@@ -327,7 +354,7 @@ public class MainActivity extends Activity {
     }
   }
 
-  /** Exposes the installed APK version so the web app can check GitHub for a new one. */
+  /** Installed version for the update check, plus a way to save a backup file. */
   public class VersionBridge {
     @JavascriptInterface
     public int versionCode() {
@@ -338,6 +365,60 @@ public class MainActivity extends Activity {
       } catch (Exception e) {
         return 0;
       }
+    }
+
+    /** Writes an exported library to Downloads and returns where it landed. */
+    @JavascriptInterface
+    public String saveFile(String name, String content) {
+      String safe = String.valueOf(name == null ? "shelfscout.json" : name).replaceAll("[^A-Za-z0-9._-]", "-");
+      byte[] bytes = String.valueOf(content == null ? "" : content).getBytes(StandardCharsets.UTF_8);
+      String mime = safe.endsWith(".csv") ? "text/csv" : "application/json";
+      try {
+        if (Build.VERSION.SDK_INT >= 29) {
+          ContentValues values = new ContentValues();
+          values.put(MediaStore.MediaColumns.DISPLAY_NAME, safe);
+          values.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+          values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/ShelfScout");
+          Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+          if (uri == null) return "";
+          OutputStream out = getContentResolver().openOutputStream(uri);
+          if (out == null) return "";
+          out.write(bytes);
+          out.close();
+          return "Downloads/ShelfScout/" + safe;
+        }
+        File dir = new File(getExternalFilesDir(null), "exports");
+        if (!dir.exists() && !dir.mkdirs()) return "";
+        File file = new File(dir, safe);
+        FileOutputStream out = new FileOutputStream(file);
+        out.write(bytes);
+        out.close();
+        return file.getAbsolutePath();
+      } catch (Exception e) {
+        return "";
+      }
+    }
+  }
+
+  @Override
+  protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    if (requestCode != FILE_PICK) {
+      super.onActivityResult(requestCode, resultCode, data);
+      return;
+    }
+    Uri[] result = null;
+    if (resultCode == RESULT_OK && data != null) {
+      if (data.getData() != null) {
+        result = new Uri[]{ data.getData() };
+      } else if (data.getClipData() != null) {
+        int count = data.getClipData().getItemCount();
+        result = new Uri[count];
+        for (int i = 0; i < count; i++) result[i] = data.getClipData().getItemAt(i).getUri();
+      }
+    }
+    if (fileCallback != null) {
+      fileCallback.onReceiveValue(result);
+      fileCallback = null;
     }
   }
 

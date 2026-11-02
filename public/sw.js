@@ -4,11 +4,13 @@
  * App files are network-first on purpose - you edit styles.css or app.js and
  * the phone/desktop app shows the change on the next load. The cache is only
  * used when the computer is unreachable. */
-const CACHE = "shelfscout-v2";
+const CACHE = "shelfscout-v3";
 const CORE = [
   "/",
   "/styles.css",
   "/app.js",
+  "/covercache.js",
+  "/offline.js",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
