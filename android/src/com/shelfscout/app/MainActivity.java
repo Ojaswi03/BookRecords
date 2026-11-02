@@ -100,9 +100,44 @@ public class MainActivity extends Activity {
     // Open the bundled shelf at once, then switch to the live server as soon
     // as it answers. That keeps the app usable with no server and makes it go
     // Live on its own when the server comes back.
+    dropStaleWebFiles();
     serverTarget = preferredServer();
     showWeb(APP_URL);
     if (!serverTarget.isEmpty()) startServerRetry(1200);
+  }
+
+  /** A downloaded bundle older than this APK must not hide the new files. */
+  private void dropStaleWebFiles() {
+    int stored = readVersion(new File(webRoot(), "webversion.txt"));
+    int bundled = readVersionFromAssets();
+    if (stored > 0 && bundled > 0 && stored < bundled) deleteTree(webRoot());
+  }
+
+  private int readVersion(File file) {
+    try (InputStream in = new FileInputStream(file)) {
+      return readVersion(in);
+    } catch (Exception e) {
+      return 0;
+    }
+  }
+
+  private int readVersionFromAssets() {
+    try (InputStream in = getAssets().open("www/webversion.txt")) {
+      return readVersion(in);
+    } catch (Exception e) {
+      return 0;
+    }
+  }
+
+  private int readVersion(InputStream in) {
+    try {
+      byte[] buffer = new byte[24];
+      int read = in.read(buffer);
+      if (read <= 0) return 0;
+      return Integer.parseInt(new String(buffer, 0, read, StandardCharsets.UTF_8).trim());
+    } catch (Exception e) {
+      return 0;
+    }
   }
 
   /** The saved link wins; otherwise the address baked in at build time. */
@@ -692,6 +727,12 @@ public class MainActivity extends Activity {
       }
       getSharedPreferences("shelfscout_features", MODE_PRIVATE).edit()
           .putBoolean("audiobook", audio).apply();
+    }
+
+    /** The server this install will try, shown in the connection banner. */
+    @JavascriptInterface
+    public String serverUrl() {
+      return serverTarget;
     }
 
     /** How far this book has been read, for the book screen and progress bar. */

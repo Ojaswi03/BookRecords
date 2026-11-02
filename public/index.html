@@ -24,10 +24,9 @@
       <div class="brand">
         <span class="logo" aria-hidden="true">📚</span>
         <div class="brand-text">
-          <h1>ShelfScout</h1>
+          <h1>ShelfScout <span id="liveBadge" class="live-badge off" title="Live sync across your devices">Offline</span></h1>
           <p class="brand-status">
             <span id="stats" aria-live="polite">Loading...</span>
-            <span id="liveBadge" class="live-badge off" title="Live sync across your devices">Offline</span>
           </p>
         </div>
       </div>
@@ -71,6 +70,13 @@
       </div>
     </div>
   </header>
+
+  <section class="conn hidden" id="conn" aria-live="polite">
+    <div class="conn-inner">
+      <span class="conn-dot" aria-hidden="true"></span>
+      <p id="connText"></p>
+    </div>
+  </section>
 
   <section class="announce hidden" id="announce" aria-live="polite">
     <div class="announce-inner">

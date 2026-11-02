@@ -736,6 +736,35 @@ function setLive(on, label) {
   badge.title = on
     ? `Live from ${location.host}. Changes appear here as they are published.`
     : "Not connected to the server right now. This device uses its own copy.";
+  renderConnection(on);
+}
+
+// The server the phone will try, so the banner can name it.
+function nativeServer() {
+  const bridge = window.ShelfApp;
+  if (!bridge || typeof bridge.serverUrl !== "function") return "";
+  try {
+    return String(bridge.serverUrl() || "").replace(/^https?:\/\//, "");
+  } catch {
+    return "";
+  }
+}
+
+// Shown only when this phone has a server to try but is not live yet.
+function renderConnection(live) {
+  const box = $("#conn");
+  if (!box) return;
+  const target = nativeServer();
+  const offline = Boolean(window.ShelfOffline && ShelfOffline.active);
+  if (live || !offline || !target) {
+    box.classList.add("hidden");
+    return;
+  }
+  const text = $("#connText");
+  if (text) {
+    text.textContent = `Using this phone's copy. Trying ${target} for live updates.`;
+  }
+  box.classList.remove("hidden");
 }
 
 async function refreshFromServer() {
@@ -749,7 +778,7 @@ async function refreshFromServer() {
 function initLive() {
   // With no server there is nothing to stream: the shelf is this device only.
   if (window.ShelfOffline && ShelfOffline.active) {
-    setLive(false, "On this device");
+    setLive(false, "This phone");
     return;
   }
   if (!("EventSource" in window)) {
