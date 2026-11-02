@@ -2,6 +2,7 @@ package com.shelfscout.app;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.pdf.PdfRenderer;
@@ -23,6 +24,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Map;
 
 /**
  * Reads a book's free PDF without leaving ShelfScout.
@@ -44,6 +46,8 @@ public class PdfActivity extends Activity {
   private Button next;
   private int pageIndex = 0;
   private Bitmap pageBitmap;
+  private SharedPreferences reading;
+  private String positionKey = "";
 
   @Override
   protected void onCreate(Bundle state) {
@@ -52,6 +56,10 @@ public class PdfActivity extends Activity {
     String url = getIntent().getStringExtra(EXTRA_URL);
     String title = getIntent().getStringExtra(EXTRA_TITLE);
     String bookId = getIntent().getStringExtra(EXTRA_BOOK);
+
+    // Where this book was left last time. Saved on every page turn and on pause.
+    reading = getSharedPreferences("shelfscout_reading", MODE_PRIVATE);
+    positionKey = positionKey(bookId, url);
 
     LinearLayout root = new LinearLayout(this);
     root.setOrientation(LinearLayout.VERTICAL);
@@ -157,7 +165,15 @@ public class PdfActivity extends Activity {
         runOnUiThread(() -> fail("This file is not a readable PDF."));
         return;
       }
-      runOnUiThread(() -> showPage(0));
+      runOnUiThread(() -> {
+        int count = renderer.getPageCount();
+        if (count == 0) {
+          fail("This PDF has no pages.");
+          return;
+        }
+        int saved = reading.getInt(positionKey, 0);
+        showPage(Math.max(0, Math.min(saved, count - 1)));
+      });
     }).start();
   }
 
@@ -229,6 +245,7 @@ public class PdfActivity extends Activity {
       if (page != null) page.close();
     }
 
+    reading.edit().putInt(positionKey, index).apply();
     counter.setText((index + 1) + " / " + count);
     prev.setEnabled(index > 0);
     next.setEnabled(index < count - 1);
@@ -245,6 +262,14 @@ public class PdfActivity extends Activity {
     renderer = null;
     try { if (descriptor != null) descriptor.close(); } catch (Exception ignored) { /* already closed */ }
     descriptor = null;
+  }
+
+  @Override
+  protected void onPause() {
+    if (reading != null && !positionKey.isEmpty() && renderer != null) {
+      reading.edit().putInt(positionKey, pageIndex).apply();
+    }
+    super.onPause();
   }
 
   @Override
@@ -270,19 +295,37 @@ public class PdfActivity extends Activity {
     return id.isEmpty() ? "book" : id;
   }
 
+  private static String positionKey(String bookId, String url) {
+    int hash = url == null ? 0 : url.hashCode();
+    return "page_" + safe(bookId) + "-" + Integer.toHexString(hash);
+  }
+
   static File cacheFile(Context context, String bookId, String url) {
     int hash = url == null ? 0 : url.hashCode();
     return new File(cacheDir(context), safe(bookId) + "-" + Integer.toHexString(hash) + ".pdf");
   }
 
-  /** Removes every PDF cached for one book; called when the book is deleted. */
+  /** Removes the cached PDF and the saved page for one book that was deleted. */
   public static void deleteCache(Context context, String bookId) {
     File[] files = cacheDir(context).listFiles();
-    if (files == null) return;
-    String prefix = safe(bookId) + "-";
-    for (File file : files) {
-      if (file.getName().startsWith(prefix)) file.delete();
+    if (files != null) {
+      String prefix = safe(bookId) + "-";
+      for (File file : files) {
+        if (file.getName().startsWith(prefix)) file.delete();
+      }
     }
+
+    SharedPreferences prefs = context.getSharedPreferences("shelfscout_reading", Context.MODE_PRIVATE);
+    String pagePrefix = "page_" + safe(bookId) + "-";
+    SharedPreferences.Editor editor = prefs.edit();
+    boolean changed = false;
+    for (Map.Entry<String, ?> entry : prefs.getAll().entrySet()) {
+      if (entry.getKey().startsWith(pagePrefix)) {
+        editor.remove(entry.getKey());
+        changed = true;
+      }
+    }
+    if (changed) editor.apply();
   }
 
   private int dp(int value) {

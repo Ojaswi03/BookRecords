@@ -89,6 +89,8 @@ If **Read PDF** opens Chrome, the phone is running an older APK. The reader is n
 
 Long-pressing a text field in the app selects text and opens Android's Copy / Paste menu. The app's own options (connect to a computer, use this phone, reset app files) are on **App settings** in the footer, so the WebView no longer intercepts long presses.
 
+The PDF reader remembers the page you stopped on for each book, and opens there next time. Deleting a book removes that saved position too.
+
 ## Refreshing
 
 Drag down from the top of the shelf and release to reload the app on a phone, without closing it.
