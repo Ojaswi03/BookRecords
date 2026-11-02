@@ -1096,6 +1096,22 @@ body {
   line-height: 1.45;
 }
 .pdf-find { margin: -6px 0 0; }
+
+.pdf-warn {
+  margin: -6px 0 0;
+  padding: 11px 13px;
+  border: 1px solid rgba(227, 177, 104, 0.32);
+  border-radius: 12px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.pdf-warn a { color: var(--accent-strong); font-weight: 600; }
+
+.build-line { margin: 4px 0 0; font-size: 11px; color: var(--faint); }
+
+.foot .link-btn { margin-top: 8px; font-size: 11.5px; color: var(--muted); }
 .link-btn {
   appearance: none;
   padding: 0;

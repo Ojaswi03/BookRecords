@@ -85,6 +85,10 @@ Tapping a book opens its cover, with **Read PDF** (only when a copy exists) and 
 
 Deleting a book removes its PDF from `data/pdfs/`, its cached copy on each device, its cached cover and the book's entries in the automatic backups.
 
+If **Read PDF** opens Chrome, the phone is running an older APK. The reader is native code and cannot arrive through **Update app files**. Install the latest APK once. In the Android app the footer shows `App vN · files vN`, so the two versions are easy to compare.
+
+Long-pressing a text field in the app selects text and opens Android's Copy / Paste menu. The app's own options (connect to a computer, use this phone, reset app files) are on **App settings** in the footer, so the WebView no longer intercepts long presses.
+
 ## Refreshing
 
 Drag down from the top of the shelf and release to reload the app on a phone, without closing it.

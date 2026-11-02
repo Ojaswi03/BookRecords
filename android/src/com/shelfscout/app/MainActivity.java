@@ -138,6 +138,28 @@ public class MainActivity extends Activity {
     file.delete();
   }
 
+  /** Phone library, computer link and app-file reset. Shown from the web footer. */
+  private void showAppMenu() {
+    String[] options = {"Connect to computer", "Use this phone", "Reset app files", "Cancel"};
+    new AlertDialog.Builder(this)
+        .setTitle("ShelfScout")
+        .setMessage("This app works on its own. You can also connect it to ShelfScout running on your computer.")
+        .setItems(options, (dialog, which) -> {
+          String linked = prefs.getString(KEY_URL, "");
+          if (which == 0) {
+            prefs.edit().remove(KEY_URL).apply();
+            showSetup();
+          } else if (which == 1) {
+            prefs.edit().remove(KEY_URL).apply();
+            showWeb(APP_URL);
+          } else if (which == 2) {
+            deleteTree(webRoot());
+            showWeb(linked.isEmpty() ? APP_URL : linked);
+          }
+        })
+        .show();
+  }
+
   private WebResourceResponse notFound() {
     return new WebResourceResponse("text/plain", "utf-8", 404, "Not Found", null,
         new ByteArrayInputStream("Not found".getBytes()));
@@ -224,6 +246,21 @@ public class MainActivity extends Activity {
 
     root.removeAllViews();
     root.addView(box, new FrameLayout.LayoutParams(MATCH, MATCH));
+  }
+
+  private static boolean isPdfUrl(String url) {
+    if (url == null) return false;
+    String clean = url.split("[?#]")[0].toLowerCase();
+    return clean.endsWith(".pdf") || clean.contains("/pdfs/");
+  }
+
+  private void openPdfInApp(String url, String bookId, String title) {
+    if (url == null || !(url.startsWith("http://") || url.startsWith("https://"))) return;
+    Intent intent = new Intent(MainActivity.this, PdfActivity.class);
+    intent.putExtra(PdfActivity.EXTRA_URL, url);
+    intent.putExtra(PdfActivity.EXTRA_BOOK, bookId == null ? "" : bookId);
+    intent.putExtra(PdfActivity.EXTRA_TITLE, title == null ? "" : title);
+    runOnUiThread(() -> startActivity(intent));
   }
 
   private String normalize(String raw) {
@@ -346,6 +383,18 @@ public class MainActivity extends Activity {
         return asset(path);
       }
 
+      // Any PDF the page tries to navigate to stays in the app.
+      @Override
+      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+        Uri uri = request.getUrl();
+        String target = uri == null ? null : uri.toString();
+        if (isPdfUrl(target)) {
+          openPdfInApp(target, "", "PDF");
+          return true;
+        }
+        return false;
+      }
+
       @Override
       public void onPageFinished(WebView view, String finishedUrl) {
         errorPanel.setVisibility(View.GONE);
@@ -357,29 +406,10 @@ public class MainActivity extends Activity {
       }
     });
 
-    // Long-press anywhere to switch between the phone library and a computer,
-    // or to roll back an update that went wrong.
-    web.setOnLongClickListener(v -> {
-      String[] options = {"Connect to computer", "Use this phone", "Reset app files", "Cancel"};
-      new AlertDialog.Builder(MainActivity.this)
-          .setTitle("ShelfScout")
-          .setMessage("This app works on its own. You can also connect it to ShelfScout running on your computer.")
-          .setItems(options, (dialog, which) -> {
-            String linked = prefs.getString(KEY_URL, "");
-            if (which == 0) {
-              prefs.edit().remove(KEY_URL).apply();
-              showSetup();
-            } else if (which == 1) {
-              prefs.edit().remove(KEY_URL).apply();
-              showWeb(APP_URL);
-            } else if (which == 2) {
-              deleteTree(webRoot());
-              showWeb(linked.isEmpty() ? APP_URL : linked);
-            }
-          })
-          .show();
-      return true;
-    });
+    // Long-press is deliberately left to the WebView. A listener here swallowed
+    // every long press, so text fields could never show Select / Paste. App
+    // options now live behind the footer's App settings button.
+
 
     wrap.addView(web, new FrameLayout.LayoutParams(MATCH, MATCH));
     wrap.addView(errorPanel, new FrameLayout.LayoutParams(MATCH, MATCH));
@@ -510,12 +540,13 @@ public class MainActivity extends Activity {
     /** Opens the PDF in ShelfScout's own reader. */
     @JavascriptInterface
     public void openPdf(String url, String bookId, String title) {
-      if (url == null || !(url.startsWith("http://") || url.startsWith("https://"))) return;
-      Intent intent = new Intent(MainActivity.this, PdfActivity.class);
-      intent.putExtra(PdfActivity.EXTRA_URL, url);
-      intent.putExtra(PdfActivity.EXTRA_BOOK, bookId == null ? "" : bookId);
-      intent.putExtra(PdfActivity.EXTRA_TITLE, title == null ? "" : title);
-      startActivity(intent);
+      openPdfInApp(url, bookId, title);
+    }
+
+    /** App options, reachable without long-press so paste keeps working. */
+    @JavascriptInterface
+    public void appMenu() {
+      runOnUiThread(MainActivity.this::showAppMenu);
     }
 
     /** Drops cached files that belong to a deleted book. */
@@ -524,12 +555,25 @@ public class MainActivity extends Activity {
       PdfActivity.deleteCache(MainActivity.this, bookId);
     }
 
-    /** Opens a PDF, or any other link, in the phone's browser or reader. */
+    /**
+     * Last-resort link opener. A PDF still goes to the in-app reader, so an
+     * older web bundle can never push reading out to Chrome.
+     */
     @JavascriptInterface
     public void openExternal(String url) {
       if (url == null || !(url.startsWith("http://") || url.startsWith("https://"))) return;
+      if (isPdfUrl(url)) {
+        openPdfInApp(url, "", "PDF");
+        return;
+      }
       try {
-        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        runOnUiThread(() -> {
+          try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+          } catch (Exception ignored) {
+            /* no app can open it */
+          }
+        });
       } catch (Exception ignored) {
         /* no app can open it */
       }

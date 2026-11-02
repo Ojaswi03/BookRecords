@@ -2,6 +2,9 @@
 
 const $ = (s) => document.querySelector(s);
 
+// Used only when this APK is too old for the native reader.
+const APK_URL = "https://github.com/Ojaswi03/BookRecords/releases/latest/download/ShelfScout.apk";
+
 const state = {
   books: [],
   genres: [],
@@ -142,6 +145,11 @@ function pdfStatus(b) {
   return b.pdfNote || "No free legal copy checked yet.";
 }
 
+// The in-app reader is native code: a web-file update cannot supply it.
+function pdfNeedsAppUpdate() {
+  return Boolean(window.ShelfApp) && typeof window.ShelfApp.openPdf !== "function";
+}
+
 function openPdfViewer(b, url) {
   $("#pdfTitle").textContent = b.title || "PDF";
   $("#pdfOpen").href = url;
@@ -161,12 +169,13 @@ function readPDF(b) {
   const url = pdfHref(b);
   if (!url) return;
   const bridge = window.ShelfApp;
-  if (bridge && typeof bridge.openPdf === "function") {
-    bridge.openPdf(url, b.id, b.title || "");
-    return;
-  }
-  if (bridge && typeof bridge.openExternal === "function") {
-    bridge.openExternal(url);
+  if (bridge) {
+    if (typeof bridge.openPdf === "function") {
+      bridge.openPdf(url, b.id, b.title || "");
+      return;
+    }
+    // Never hand the PDF to Chrome from inside the app.
+    toast("Install the latest app once to read PDFs inside ShelfScout.", true);
     return;
   }
   openPdfViewer(b, url);
@@ -908,6 +917,7 @@ function renderBookView(b) {
       </div>
 
       <p class="pdf-status" id="pdfStatus">${esc(pdfStatus(b))}</p>
+      ${pdf && pdfNeedsAppUpdate() ? `<p class="pdf-warn">This app build opens PDFs in Chrome. <a href="${APK_URL}" target="_blank" rel="noopener">Install the latest app once</a> to read them inside ShelfScout.</p>` : ""}
       ${pdf ? "" : `<p class="pdf-find"><button class="link-btn" type="button" data-find-pdf="${b.id}">Find a free PDF</button></p>`}
 
       <div class="banner-actions">
@@ -1159,7 +1169,24 @@ async function init() {
   initLive();
   registerServiceWorker();
   initPullRefresh();
+  initAppMenu();
   if (window.CoverCache) CoverCache.warm(state.books.map((b) => b.cover));
+}
+
+// Connect to a computer and reset app files, without stealing long-press from
+// text fields (the old APK did that, which broke paste).
+function initAppMenu() {
+  const link = $("#appMenu");
+  if (!link) return;
+  const bridge = window.ShelfApp;
+  if (!bridge || typeof bridge.appMenu !== "function") return;
+  link.classList.remove("hidden");
+  if (!link.dataset.wired) {
+    link.addEventListener("click", () => {
+      if (window.ShelfApp && typeof window.ShelfApp.appMenu === "function") window.ShelfApp.appMenu();
+    });
+    link.dataset.wired = "1";
+  }
 }
 
 // Drag down from the top of the shelf, release, and the app reloads.
