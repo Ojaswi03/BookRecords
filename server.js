@@ -14,6 +14,8 @@ const CERT_DIR = path.join(__dirname, "certs");
 const DATA_DIR = path.join(__dirname, "data");
 const LIB_FILE = path.join(DATA_DIR, "library.json");
 const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
+const PDF_DIR = path.join(DATA_DIR, "pdfs");
+const MAX_PDF_BYTES = 80 * 1024 * 1024;
 
 // Optional permanent link: a domain reserved on your ngrok account (free) or a
 // full public URL. Both can come from the environment or data/settings.json.
@@ -468,8 +470,198 @@ function makeBook(record) {
     loanedTo: record.loanedTo || "",
     loanedAt: record.loanedAt || "",
     dueAt: record.dueAt || "",
+    pdf: record.pdf || "",
+    pdfUrl: record.pdfUrl || "",
+    pdfSource: record.pdfSource || "",
+    pdfNote: record.pdfNote || "",
     addedAt: new Date().toISOString(),
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * Free, legal PDFs only.
+ *
+ * The only copies this app downloads are public-domain scans (Internet
+ * Archive, when Open Library reports the scan as public) and PDFs that Project
+ * Gutenberg publishes. A book that is merely borrowable, or sold, is never
+ * downloaded - it gets a note instead. Copyrighted copies on file-sharing
+ * sites are not searched for at all.
+ * ------------------------------------------------------------------ */
+
+function sameWorkTitle(a, b) {
+  const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const x = norm(a);
+  const y = norm(b);
+  if (!x || !y) return false;
+  return x === y || (x.length > 8 && y.includes(x)) || (y.length > 8 && x.includes(y));
+}
+
+function removePDF(file) {
+  try {
+    if (file && String(file).startsWith("/pdfs/")) {
+      fs.unlinkSync(path.join(PDF_DIR, path.basename(file)));
+    }
+  } catch {
+    /* already gone */
+  }
+}
+
+async function downloadPDF(url, file) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60000);
+  let out = null;
+  try {
+    const res = await fetch(url, {
+      redirect: "follow",
+      signal: ctrl.signal,
+      headers: { "User-Agent": "ShelfScout/1.0 (personal library)" },
+    });
+    if (!res.ok || !res.body) return 0;
+    const type = String(res.headers.get("content-type") || "").toLowerCase();
+    if (type && !type.includes("pdf") && !type.includes("octet-stream")) return 0;
+    if (Number(res.headers.get("content-length") || 0) > MAX_PDF_BYTES) return 0;
+
+    fs.mkdirSync(PDF_DIR, { recursive: true });
+    try { fs.unlinkSync(file); } catch { /* no earlier copy */ }
+    out = fs.createWriteStream(file);
+    const reader = res.body.getReader();
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_PDF_BYTES) throw new Error("too big");
+      if (!out.write(Buffer.from(value))) {
+        await new Promise((resolve) => out.once("drain", resolve));
+      }
+    }
+    await new Promise((resolve, reject) => {
+      out.end();
+      out.on("finish", resolve);
+      out.on("error", reject);
+    });
+    out = null;
+
+    const fd = fs.openSync(file, "r");
+    const head = Buffer.alloc(5);
+    fs.readSync(fd, head, 0, 5, 0);
+    fs.closeSync(fd);
+    if (head.toString("utf8") !== "%PDF-") throw new Error("not a pdf");
+    return total;
+  } catch {
+    if (out) { try { out.destroy(); } catch { /* ignore */ } }
+    try { fs.unlinkSync(file); } catch { /* ignore */ }
+    return 0;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function findFreePDF(book) {
+  const title = String(book.title || "").trim();
+  const author = (book.authors || [])[0] || "";
+  const isbn = cleanISBN(book.isbn);
+  const file = path.join(PDF_DIR, `${book.id}.pdf`);
+
+  let access = "";
+  let scans = [];
+  if (isbn && isValidISBN(isbn)) {
+    try {
+      const data = await fetchJSON(
+        `https://openlibrary.org/search.json?q=isbn:${isbn}&fields=title,author_name,ebook_access,ia&limit=1`
+      );
+      const doc = (data.docs || [])[0];
+      if (doc) {
+        access = String(doc.ebook_access || "");
+        scans = Array.isArray(doc.ia) ? doc.ia.slice(0, 2) : [];
+      }
+    } catch {
+      /* try the title below */
+    }
+  }
+
+  // A specific edition can be lendable while the work itself has a public
+  // scan, so look by title too, but only accept public (full view) copies.
+  if (access !== "public" && title) {
+    try {
+      const data = await fetchJSON(
+        `https://openlibrary.org/search.json?q=${encodeURIComponent(title)}&fields=title,ebook_access,ia&limit=5`
+      );
+      const doc = (data.docs || []).find(
+        (d) => d.ebook_access === "public" && Array.isArray(d.ia) && d.ia.length && sameWorkTitle(d.title, title)
+      );
+      if (doc) {
+        access = "public";
+        scans = doc.ia.slice(0, 2);
+      }
+    } catch {
+      /* no free copy */
+    }
+  }
+
+  if (access === "public") {
+    for (const ia of scans) {
+      const url = `https://archive.org/download/${encodeURIComponent(ia)}/${encodeURIComponent(ia)}.pdf`;
+      if (await downloadPDF(url, file)) {
+        return { pdf: `/pdfs/${book.id}.pdf`, pdfUrl: url, pdfSource: "Internet Archive", pdfNote: "" };
+      }
+    }
+  }
+
+  // Project Gutenberg publishes mostly EPUB and HTML; use it only for a PDF.
+  try {
+    const query = [title, author].filter(Boolean).join(" ");
+    const data = await fetchJSON(`https://gutendex.com/books?search=${encodeURIComponent(query)}`);
+    const hit = (data.results || []).find(
+      (r) => sameWorkTitle(r.title, title) && r.formats
+        && Object.keys(r.formats).some((k) => k.startsWith("application/pdf"))
+    );
+    const pdfUrl = hit ? Object.entries(hit.formats).find(([k]) => k.startsWith("application/pdf"))[1] : "";
+    if (pdfUrl && await downloadPDF(pdfUrl, file)) {
+      return { pdf: `/pdfs/${book.id}.pdf`, pdfUrl, pdfSource: "Project Gutenberg", pdfNote: "" };
+    }
+  } catch {
+    /* no Gutenberg copy */
+  }
+
+  if (access === "public" && scans.length) {
+    return { pdf: "", pdfUrl: "", pdfSource: "", pdfNote: "A free scan exists, but the download failed right now. Try again later." };
+  }
+  if (access === "borrowable") {
+    return { pdf: "", pdfUrl: "", pdfSource: "", pdfNote: "Free to borrow on Open Library, but not downloadable." };
+  }
+  if (access === "printdisabled") {
+    return { pdf: "", pdfUrl: "", pdfSource: "", pdfNote: "Available only to print-disabled readers, not as a free download." };
+  }
+  return { pdf: "", pdfUrl: "", pdfSource: "", pdfNote: "No free legal download found." };
+}
+
+const pdfJobs = new Set();
+
+// Lookups run after the scan response, so a big scan never blocks the shelf.
+function queuePDF(bookId) {
+  if (!bookId || pdfJobs.has(bookId)) return;
+  pdfJobs.add(bookId);
+  setTimeout(async () => {
+    try {
+      const book = loadBooks().find((b) => b.id === bookId);
+      if (!book || book.pdf) return;
+      const result = await findFreePDF(book);
+      const latest = loadBooks();
+      const idx = latest.findIndex((b) => b.id === bookId);
+      if (idx === -1) {
+        removePDF(result.pdf);
+        return;
+      }
+      latest[idx] = { ...latest[idx], ...result, pdfCheckedAt: new Date().toISOString() };
+      saveBooks(latest);
+      broadcast("library", { reason: "pdf", book: latest[idx], origin: "system" });
+    } catch {
+      /* leave the book without a copy; the user can retry */
+    } finally {
+      pdfJobs.delete(bookId);
+    }
+  }, 30);
 }
 
 /* ------------------------------------------------------------------ *
@@ -571,6 +763,24 @@ function serveStatic(req, res) {
   if (ext === ".apk") headers["Content-Disposition"] = 'attachment; filename="ShelfScout.apk"';
   res.writeHead(200, headers);
   fs.createReadStream(filePath).pipe(res);
+}
+
+function servePDF(pathname, res) {
+  const name = path.basename(decodeURIComponent(pathname));
+  const file = path.join(PDF_DIR, name);
+  if (!name.toLowerCase().endsWith(".pdf") || !fs.existsSync(file)) {
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    res.end("Not found");
+    return;
+  }
+  const stat = fs.statSync(file);
+  res.writeHead(200, {
+    "Content-Type": "application/pdf",
+    "Content-Length": stat.size,
+    "Content-Disposition": `inline; filename="${name}"`,
+    "Cache-Control": "private, max-age=86400",
+  });
+  fs.createReadStream(file).pipe(res);
 }
 
 /* ------------------------------------------------------------------ *
@@ -730,7 +940,10 @@ async function handleAPI(req, res, pathname) {
     const existing = books.find((b) => b.isbn === isbn);
     // Rescanning never changes the count by itself - the client asks the user
     // first and only then calls POST /api/books/:id/copy.
-    if (existing) return sendJSON(res, 200, { book: existing, existed: true, needsConfirm: true });
+    if (existing) {
+      if (!existing.pdf) queuePDF(existing.id);
+      return sendJSON(res, 200, { book: existing, existed: true, needsConfirm: true });
+    }
 
     const found = await lookupISBN(isbn);
     if (!found) {
@@ -741,6 +954,7 @@ async function handleAPI(req, res, pathname) {
     books.push(book);
     saveBooks(books);
     broadcast("library", { reason: "added", book, origin });
+    queuePDF(book.id);
     return sendJSON(res, 201, { book, existed: false });
   }
 
@@ -794,7 +1008,28 @@ async function handleAPI(req, res, pathname) {
     books.push(book);
     saveBooks(books);
     broadcast("library", { reason: "added", book, origin });
+    queuePDF(book.id);
     return sendJSON(res, 201, { book, existed: false });
+  }
+
+  // POST /api/books/:id/pdf - retry the free copy lookup now
+  const pdfMatch = pathname.match(/^\/api\/books\/([\w-]+)\/pdf$/);
+  if (req.method === "POST" && pdfMatch) {
+    const books = loadBooks();
+    const idx = books.findIndex((b) => b.id === pdfMatch[1]);
+    if (idx === -1) return sendJSON(res, 404, { error: "Book not found." });
+    if (books[idx].pdf) return sendJSON(res, 200, { book: books[idx] });
+    const result = await findFreePDF(books[idx]);
+    const latest = loadBooks();
+    const i = latest.findIndex((b) => b.id === pdfMatch[1]);
+    if (i === -1) {
+      removePDF(result.pdf);
+      return sendJSON(res, 404, { error: "Book not found." });
+    }
+    latest[i] = { ...latest[i], ...result, pdfCheckedAt: new Date().toISOString() };
+    saveBooks(latest);
+    broadcast("library", { reason: "pdf", book: latest[i], origin });
+    return sendJSON(res, 200, { book: latest[i] });
   }
 
   // POST /api/books/:id/copy { delta } - adjust how many physical copies you own.
@@ -866,9 +1101,11 @@ async function handleAPI(req, res, pathname) {
   // DELETE /api/books/:id
   if (req.method === "DELETE" && idMatch) {
     const books = loadBooks();
+    const removed = books.find((b) => b.id === idMatch[1]);
     const next = books.filter((b) => b.id !== idMatch[1]);
     if (next.length === books.length) return sendJSON(res, 404, { error: "Book not found." });
     saveBooks(next);
+    removePDF(removed && removed.pdf);
     broadcast("library", { reason: "removed", id: idMatch[1], origin });
     return sendJSON(res, 200, { ok: true });
   }
@@ -889,7 +1126,9 @@ const TUNNEL_PORT = PORT + 1;
 const handler = async (req, res) => {
   try {
     const { pathname } = new URL(req.url, "http://localhost");
-    if (pathname.startsWith("/api/")) {
+    if (pathname.startsWith("/pdfs/")) {
+      servePDF(pathname, res);
+    } else if (pathname.startsWith("/api/")) {
       await handleAPI(req, res, pathname);
     } else {
       serveStatic(req, res);

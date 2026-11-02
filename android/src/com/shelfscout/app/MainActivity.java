@@ -507,6 +507,17 @@ public class MainActivity extends Activity {
       }
     }
 
+    /** Opens a PDF, or any other link, in the phone's browser or reader. */
+    @JavascriptInterface
+    public void openExternal(String url) {
+      if (url == null || !(url.startsWith("http://") || url.startsWith("https://"))) return;
+      try {
+        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+      } catch (Exception ignored) {
+        /* no app can open it */
+      }
+    }
+
     /** Writes an exported library to Downloads and returns where it landed. */
     @JavascriptInterface
     public String saveFile(String name, String content) {

@@ -126,6 +126,50 @@ function loanLine(b) {
   return `<p class="loan-line">On loan to ${esc(b.loanedTo)}${due}</p>`;
 }
 
+// Absolute URL of the free copy, if this book has one. On-device mode can only
+// open a remote link; a server path only works while the server is in use.
+function pdfHref(b) {
+  const local = String(b.pdf || "");
+  const remote = String(b.pdfUrl || "");
+  if (window.ShelfOffline && ShelfOffline.active) return /^https?:/i.test(remote) ? remote : "";
+  if (local.startsWith("/")) return location.origin + local;
+  if (/^https?:/i.test(local)) return local;
+  return /^https?:/i.test(remote) ? remote : "";
+}
+
+function pdfStatus(b) {
+  if (pdfHref(b)) return `Free copy from ${b.pdfSource || "the web"}.`;
+  return b.pdfNote || "No free legal copy checked yet.";
+}
+
+function readPDF(b) {
+  const url = pdfHref(b);
+  if (!url) return;
+  const bridge = window.ShelfApp;
+  if (bridge && typeof bridge.openExternal === "function") {
+    bridge.openExternal(url);
+    return;
+  }
+  window.open(url, "_blank", "noopener");
+}
+
+async function findPDF(id) {
+  const note = $("#pdfStatus");
+  if (note) note.textContent = "Looking for a free copy...";
+  try {
+    const data = await api(`/api/books/${id}/pdf`, { method: "POST" });
+    state.books = (await api("/api/books")).books;
+    render();
+    openDetail(id);
+    const book = data.book || state.books.find((b) => b.id === id) || {};
+    const found = Boolean(pdfHref(book));
+    toast(found ? "Free PDF added." : (book.pdfNote || "No free legal download found."), !found);
+  } catch (err) {
+    toast(err.message, true);
+    openDetail(id);
+  }
+}
+
 // The exact order books appear on screen, so placement advice matches the view.
 function displayOrder(all) {
   if (state.mode !== "genre") return all;
@@ -163,7 +207,7 @@ function rowHTML(b) {
     <div class="idx">${rank}</div>
     <div class="thumb">${thumb}</div>
     <div class="meta">
-      <h3>${esc(b.title)}${(b.count || 1) > 1 ? ` <span class="count-badge">×${b.count}</span>` : ""}</h3>
+      <h3>${esc(b.title)}${(b.count || 1) > 1 ? ` <span class="count-badge">×${b.count}</span>` : ""}${pdfHref(b) ? ' <span class="pdf-badge">PDF</span>' : ""}</h3>
       <p class="author">${esc(author)}</p>
       <p class="sub">${esc(sub)}</p>
       ${loanLine(b)}
@@ -807,11 +851,65 @@ function initQR(urls) {
  * Book detail / edit
  * ------------------------------------------------------------------ */
 
-function openDetail(id) {
+// The screen a tapped book opens: cover first, then reading or editing.
+function renderBookView(b) {
+  const all = sortedAll();
+  const order = displayOrder(all);
+  const idx = order.findIndex((x) => x.id === b.id);
+  const above = idx > 0 ? order[idx - 1] : null;
+  const below = idx >= 0 && idx < order.length - 1 ? order[idx + 1] : null;
+  const rank = state.ranks.get(b.id);
+  const genre = normalizeGenre(b.genre);
+  const sectionBooks = all.filter((x) => normalizeGenre(x.genre) === genre);
+  const secIdx = sectionBooks.findIndex((x) => x.id === b.id) + 1;
+  const cover = coverSrc(b.cover);
+  const pdf = pdfHref(b);
+
+  $("#detailBody").innerHTML = `
+    <div class="book-view">
+      <div class="book-hero">
+        <div class="book-cover-wrap">
+          <img class="book-cover${cover ? "" : " hidden"}" alt="Cover of ${esc(b.title)}"
+               ${cover ? `src="${esc(cover)}"` : ""} onerror="this.classList.add('hidden')">
+          <div class="book-cover placeholder${cover ? " hidden" : ""}">📖</div>
+        </div>
+        <div class="book-info">
+          <h2 class="book-title">${esc(b.title)}</h2>
+          <p class="book-author">${esc((b.authors || []).join(", ") || "Unknown author")}</p>
+          <p class="chips">
+            <span class="chip">${esc(genre)}</span>
+            ${b.year ? `<span class="chip">${esc(b.year)}</span>` : ""}
+            ${(b.count || 1) > 1 ? `<span class="chip copy">×${b.count} copies</span>` : ""}
+          </p>
+          <p class="sub">#${rank} of ${state.books.length} · slot ${secIdx} of ${sectionBooks.length} in ${esc(genre)}</p>
+          <p class="sub">${above ? `▲ Put it under ${esc(labelOf(above))}` : "▲ Top of this section"}</p>
+          <p class="sub">${below ? `▼ Put it above ${esc(labelOf(below))}` : "▼ Bottom of this section"}</p>
+          ${b.loanedTo ? `<p class="loan-line">On loan to ${esc(b.loanedTo)}${b.dueAt ? ` · due ${esc(shortDate(b.dueAt))}` : ""}</p>` : ""}
+        </div>
+      </div>
+
+      <p class="pdf-status" id="pdfStatus">${esc(pdfStatus(b))}</p>
+      ${pdf ? "" : `<p class="pdf-find"><button class="link-btn" type="button" data-find-pdf="${b.id}">Find a free PDF</button></p>`}
+
+      <div class="banner-actions">
+        ${pdf ? `<button class="btn primary" data-read="${b.id}">Read PDF</button>` : ""}
+        <button class="btn ${pdf ? "ghost" : "primary"}" data-edit="${b.id}">Edit info</button>
+      </div>
+    </div>`;
+
+  $("#detailModal").classList.remove("hidden");
+}
+
+function openDetail(id, edit = false) {
   const b = state.books.find((x) => x.id === id);
   if (!b) return;
   state.detailId = id;
   state.detailCover = null;
+
+  if (!edit) {
+    renderBookView(b);
+    return;
+  }
 
   const all = sortedAll();
   const order = displayOrder(all);
@@ -875,7 +973,7 @@ function openDetail(id) {
       <p class="detail-meta">Source: ${esc(b.source || "-")} · Added ${esc(String(b.addedAt || "").slice(0, 10))}</p>
       <div class="banner-actions">
         <button class="btn primary" type="submit">Save changes</button>
-        <button class="btn ghost" type="button" data-detail-close>Close</button>
+        <button class="btn ghost" type="button" data-back="${b.id}">Back</button>
       </div>
     </form>`;
 
@@ -969,9 +1067,35 @@ $("#detailBody").addEventListener("click", async (e) => {
     closeDetail();
     return;
   }
-  const back = e.target.closest("[data-return]");
-  if (!back) return;
-  const id = back.getAttribute("data-return");
+
+  const edit = e.target.closest("[data-edit]");
+  if (edit) {
+    openDetail(edit.getAttribute("data-edit"), true);
+    return;
+  }
+
+  const read = e.target.closest("[data-read]");
+  if (read) {
+    const book = state.books.find((x) => x.id === read.getAttribute("data-read"));
+    if (book) readPDF(book);
+    return;
+  }
+
+  const find = e.target.closest("[data-find-pdf]");
+  if (find) {
+    findPDF(find.getAttribute("data-find-pdf"));
+    return;
+  }
+
+  const back = e.target.closest("[data-back]");
+  if (back) {
+    openDetail(back.getAttribute("data-back"));
+    return;
+  }
+
+  const returnBtn = e.target.closest("[data-return]");
+  if (!returnBtn) return;
+  const id = returnBtn.getAttribute("data-return");
   try {
     await api(`/api/books/${id}`, {
       method: "PUT",
@@ -1015,7 +1139,57 @@ async function init() {
   initQR(urls);
   initLive();
   registerServiceWorker();
+  initPullRefresh();
   if (window.CoverCache) CoverCache.warm(state.books.map((b) => b.cover));
+}
+
+// Drag down from the top of the shelf, release, and the app reloads.
+function initPullRefresh() {
+  const el = $("#pull");
+  if (!el) return;
+  const label = el.querySelector(".pull-text");
+  const threshold = 70;
+  let startY = 0;
+  let pulling = false;
+  let distance = 0;
+
+  document.addEventListener("touchstart", (e) => {
+    if (window.scrollY > 0 || e.touches.length !== 1) return;
+    if (e.target.closest(".modal, input, textarea, select, .viewfinder")) return;
+    startY = e.touches[0].clientY;
+    pulling = true;
+    distance = 0;
+  }, { passive: true });
+
+  document.addEventListener("touchmove", (e) => {
+    if (!pulling) return;
+    const delta = e.touches[0].clientY - startY;
+    if (delta <= 0) {
+      distance = 0;
+      el.classList.remove("visible", "ready");
+      return;
+    }
+    distance = Math.min(130, delta);
+    if (distance > 12) e.preventDefault();
+    el.classList.add("visible");
+    el.classList.toggle("ready", distance >= threshold);
+    if (label) label.textContent = distance >= threshold ? "Release to refresh" : "Pull to refresh";
+  }, { passive: false });
+
+  const finish = () => {
+    if (!pulling) return;
+    pulling = false;
+    const refresh = distance >= threshold;
+    el.classList.remove("visible", "ready");
+    distance = 0;
+    if (!refresh) return;
+    el.classList.add("visible", "busy");
+    if (label) label.textContent = "Refreshing...";
+    setTimeout(() => location.reload(), 250);
+  };
+
+  document.addEventListener("touchend", finish);
+  document.addEventListener("touchcancel", finish);
 }
 
 $("#scanBtn").addEventListener("click", openScanner);

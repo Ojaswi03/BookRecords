@@ -1039,6 +1039,122 @@ body {
 }
 
 /* ------------------------------------------------------------------
+ * Book view: cover, reading and editing
+ * ------------------------------------------------------------------ */
+
+.book-view { display: grid; gap: 16px; }
+
+.book-hero {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.book-cover-wrap {
+  flex: 0 0 clamp(118px, 38%, 186px);
+  min-width: 0;
+}
+
+.book-cover {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-3);
+  box-shadow: 0 14px 28px -18px rgba(0, 0, 0, 0.9);
+}
+.book-cover.placeholder {
+  display: grid;
+  place-items: center;
+  font-size: 42px;
+  color: var(--muted);
+}
+
+.book-info { display: grid; gap: 5px; min-width: 0; }
+.book-title {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(20px, 4vw, 26px);
+  font-weight: 600;
+  line-height: 1.2;
+}
+.book-author { margin: 0; color: var(--text-2); font-size: 14px; }
+.book-info .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+.book-info .chip { margin-left: 0; }
+.book-info .sub { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+
+.pdf-status {
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: rgba(255, 240, 220, 0.025);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.pdf-find { margin: -6px 0 0; }
+.link-btn {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.pdf-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 7px;
+  border: 1px solid rgba(148, 194, 164, 0.32);
+  border-radius: 999px;
+  background: var(--sage-soft);
+  color: var(--sage);
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  vertical-align: middle;
+}
+
+@media (max-width: 460px) {
+  .book-hero { gap: 14px; }
+  .book-cover-wrap { flex-basis: 44%; }
+}
+
+/* ------------------------------------------------------------------
+ * Pull to refresh
+ * ------------------------------------------------------------------ */
+
+.pull {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  left: 50%;
+  z-index: 45;
+  padding: 8px 15px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: var(--shadow-1);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -18px);
+  transition: opacity 0.18s ease, transform 0.18s ease, color 0.18s ease;
+}
+.pull.visible { opacity: 1; transform: translate(-50%, 0); }
+.pull.ready { color: var(--accent-strong); border-color: rgba(217, 161, 92, 0.42); }
+.pull.busy { color: var(--sage); border-color: rgba(148, 194, 164, 0.42); }
+
+/* ------------------------------------------------------------------
  * Loan tracker
  * ------------------------------------------------------------------ */
 

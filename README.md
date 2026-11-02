@@ -77,6 +77,16 @@ Open a book and fill in **Lent to** and, if you want, **Due back**. The book kee
 
 Covers are cached on each device after they first load, so the shelf still shows them with no internet. Covers uploaded from a file are stored small to keep the library file lean.
 
+## Free PDFs
+
+When a book is added, ShelfScout looks for a free, legal copy: public-domain scans on Internet Archive and PDFs published by Project Gutenberg. A public-domain PDF is downloaded once into `data/pdfs/` and served with the app, and the book gets a PDF badge. Books with no free copy say so in the book view; borrowable or paid titles are never downloaded, and copyrighted copies on file-sharing sites are not searched for.
+
+Tapping a book opens its cover, with **Read PDF** (only when a copy exists) and **Edit info**. For a book added before this feature, use **Find a free PDF** to try again.
+
+## Refreshing
+
+Drag down from the top of the shelf and release to reload the app on a phone, without closing it.
+
 ## Licence and legal
 
 This is paid, proprietary software. Reading the source does not grant the right to use it.

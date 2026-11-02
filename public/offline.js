@@ -216,6 +216,77 @@ window.ShelfOffline = (function () {
     };
   }
 
+  // The device cannot store a whole PDF, so it only keeps a link to a legal
+  // free copy. Same rules as the server: public-domain scans and Gutenberg.
+  function titleMatch(a, b) {
+    const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const x = norm(a);
+    const y = norm(b);
+    if (!x || !y) return false;
+    return x === y || (x.length > 8 && y.includes(x)) || (y.length > 8 && x.includes(y));
+  }
+
+  async function findFreePDFOnline(book) {
+    const title = String(book.title || "").trim();
+    const isbn = cleanISBN(book.isbn);
+    let access = "";
+    let scans = [];
+
+    if (isbn && isValidISBN(isbn)) {
+      try {
+        const data = await getJSON(`https://openlibrary.org/search.json?q=isbn:${isbn}&fields=title,ebook_access,ia&limit=1`);
+        const doc = (data.docs || [])[0];
+        if (doc) {
+          access = String(doc.ebook_access || "");
+          scans = Array.isArray(doc.ia) ? doc.ia.slice(0, 2) : [];
+        }
+      } catch {
+        /* try the title below */
+      }
+    }
+
+    if (access !== "public" && title) {
+      try {
+        const data = await getJSON(`https://openlibrary.org/search.json?q=${encodeURIComponent(title)}&fields=title,ebook_access,ia&limit=5`);
+        const doc = (data.docs || []).find(
+          (d) => d.ebook_access === "public" && Array.isArray(d.ia) && d.ia.length && titleMatch(d.title, title)
+        );
+        if (doc) {
+          access = "public";
+          scans = doc.ia.slice(0, 2);
+        }
+      } catch {
+        /* no free copy */
+      }
+    }
+
+    if (access === "public" && scans.length) {
+      return {
+        pdf: "",
+        pdfUrl: `https://archive.org/download/${encodeURIComponent(scans[0])}/${encodeURIComponent(scans[0])}.pdf`,
+        pdfSource: "Internet Archive",
+        pdfNote: "Free public-domain scan. Opens online.",
+      };
+    }
+
+    try {
+      const query = [title, (book.authors || [])[0] || ""].filter(Boolean).join(" ");
+      const data = await getJSON(`https://gutendex.com/books?search=${encodeURIComponent(query)}`);
+      const hit = (data.results || []).find((r) => titleMatch(r.title, title));
+      const pdf = hit && hit.formats ? Object.entries(hit.formats).find(([k]) => k.startsWith("application/pdf")) : null;
+      if (pdf && pdf[1]) {
+        return { pdf: "", pdfUrl: pdf[1], pdfSource: "Project Gutenberg", pdfNote: "Free public-domain PDF. Opens online." };
+      }
+    } catch {
+      /* no Gutenberg copy */
+    }
+
+    if (access === "borrowable") {
+      return { pdf: "", pdfUrl: "", pdfSource: "", pdfNote: "Free to borrow on Open Library, but not downloadable." };
+    }
+    return { pdf: "", pdfUrl: "", pdfSource: "", pdfNote: "No free legal download found." };
+  }
+
   async function lookupISBN(isbn) {
     try {
       const found = await lookupOpenLibrary(isbn);
@@ -260,6 +331,10 @@ window.ShelfOffline = (function () {
       loanedTo: record.loanedTo || "",
       loanedAt: record.loanedAt || "",
       dueAt: record.dueAt || "",
+      pdf: record.pdf || "",
+      pdfUrl: record.pdfUrl || "",
+      pdfSource: record.pdfSource || "",
+      pdfNote: record.pdfNote || "",
       addedAt: new Date().toISOString(),
       count: 1,
     };
@@ -375,6 +450,7 @@ window.ShelfOffline = (function () {
       const found = await lookupISBN(isbn);
       if (!found) throw fail("No online record for this ISBN.", 404);
       const book = makeBook(found);
+      Object.assign(book, await findFreePDFOnline(book));
       writeBooks(books.concat(book));
       return { book, existed: false };
     }
@@ -411,8 +487,20 @@ window.ShelfOffline = (function () {
       const manualGenre = String(body.genre || "").trim().replace(/\s+/g, " ").slice(0, 60);
       if (manualGenre) record.genre = manualGenre;
       const book = makeBook(record);
+      Object.assign(book, await findFreePDFOnline(book));
       writeBooks(books.concat(book));
       return { book, existed: false };
+    }
+
+    const pdfMatch = path.match(/^\/api\/books\/([\w-]+)\/pdf$/);
+    if (method === "POST" && pdfMatch) {
+      const idx = books.findIndex((b) => b.id === pdfMatch[1]);
+      if (idx === -1) throw fail("Book not found.", 404);
+      if (!books[idx].pdf && !books[idx].pdfUrl) {
+        books[idx] = { ...books[idx], ...(await findFreePDFOnline(books[idx])) };
+        writeBooks(books);
+      }
+      return { book: books[idx] };
     }
 
     let match = path.match(/^\/api\/books\/([\w-]+)\/copy$/);
