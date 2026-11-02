@@ -51,6 +51,21 @@ fi
 VCODE="$(sed -n 's/.*android:versionCode="\([0-9]*\)".*/\1/p' "$ROOT/android/AndroidManifest.xml" | head -1)"
 printf '%s' "$VCODE" > "$ROOT/android/assets/www/webversion.txt"
 
+# The address a fresh install tries by itself, so it goes Live as soon as the
+# server is reachable. SHELFSCOUT_SERVER_URL wins; otherwise the permanent
+# ngrok link from data/settings.json is used. Empty means phone only.
+SERVER_URL="${SHELFSCOUT_SERVER_URL:-}"
+if [ -z "$SERVER_URL" ] && [ -f "$ROOT/data/settings.json" ]; then
+  SERVER_URL="$(node -e 'const fs=require("fs");try{const s=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const d=String(s.ngrokDomain||"").trim().replace(/^https?:\/\//i,"").replace(/\/.*$/,"");if(d)process.stdout.write("https://"+d)}catch(e){}' "$ROOT/data/settings.json")"
+fi
+case "$SERVER_URL" in
+  http://*|https://*) ;;
+  *) SERVER_URL="" ;;
+esac
+SERVER_URL="${SERVER_URL%/}"
+printf '%s' "$SERVER_URL" > "$ROOT/android/assets/www/serverurl.txt"
+echo "Live server baked into the app: ${SERVER_URL:-none}"
+
 # Reuse the PWA icon as the launcher icon.
 cp "$ROOT/public/icons/icon-512.png" "$ROOT/android/res/mipmap/ic_launcher.png"
 

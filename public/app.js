@@ -733,6 +733,9 @@ function setLive(on, label) {
   badge.classList.toggle("on", on);
   badge.classList.toggle("off", !on);
   badge.textContent = label || (on ? "Live" : "Offline");
+  badge.title = on
+    ? `Live from ${location.host}. Changes appear here as they are published.`
+    : "Not connected to the server right now. This device uses its own copy.";
 }
 
 async function refreshFromServer() {
@@ -749,11 +752,16 @@ function initLive() {
     setLive(false, "On this device");
     return;
   }
-  if (!("EventSource" in window)) return;
+  if (!("EventSource" in window)) {
+    setLive(false, "Offline");
+    return;
+  }
+  setLive(false, "Connecting");
   const stream = new EventSource(`/api/events?client=${encodeURIComponent(clientId)}`);
 
   stream.addEventListener("open", () => setLive(true));
-  stream.addEventListener("error", () => setLive(false)); // EventSource retries on its own
+  // EventSource retries on its own, so this is a moment, not a failure.
+  stream.addEventListener("error", () => setLive(false, "Reconnecting"));
 
   stream.addEventListener("library", async (e) => {
     let data = {};

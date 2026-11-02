@@ -13,6 +13,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.text.InputType;
 import android.view.Gravity;
@@ -76,10 +78,16 @@ public class MainActivity extends Activity {
   private static final String APP_HOST = "appassets.androidplatform.net";
   private static final String APP_URL = "https://" + APP_HOST + "/index.html";
 
+  private static final long RETRY_MS = 15000;
+
   private SharedPreferences prefs;
   private FrameLayout root;
   private WebView web;
   private String currentUrl = "";
+  private String serverTarget = "";
+  private final Handler retryHandler = new Handler(Looper.getMainLooper());
+  private boolean retrying;
+  private boolean inSetup;
 
   @Override
   protected void onCreate(Bundle state) {
@@ -89,9 +97,106 @@ public class MainActivity extends Activity {
     root.setBackgroundColor(Color.parseColor("#14120F"));
     setContentView(root);
 
-    // The bundled library is the default; a saved link points at a computer.
+    // Open the bundled shelf at once, then switch to the live server as soon
+    // as it answers. That keeps the app usable with no server and makes it go
+    // Live on its own when the server comes back.
+    serverTarget = preferredServer();
+    showWeb(APP_URL);
+    if (!serverTarget.isEmpty()) startServerRetry(1200);
+  }
+
+  /** The saved link wins; otherwise the address baked in at build time. */
+  private String preferredServer() {
     String saved = prefs.getString(KEY_URL, "");
-    showWeb(saved.isEmpty() ? APP_URL : saved);
+    if (!saved.isEmpty()) return saved;
+    if (!prefs.getBoolean("auto_server", true)) return "";
+    return bakedServerUrl();
+  }
+
+  /** Written by the build from the permanent link, so every install knows it. */
+  private String bakedServerUrl() {
+    try (InputStream in = getAssets().open("www/serverurl.txt")) {
+      byte[] buffer = new byte[512];
+      int read = in.read(buffer);
+      if (read <= 0) return "";
+      String url = new String(buffer, 0, read, StandardCharsets.UTF_8).trim();
+      if (!url.startsWith("https://") && !url.startsWith("http://")) return "";
+      return url.replaceAll("/+$", "");
+    } catch (Exception e) {
+      return "";
+    }
+  }
+
+  /** Checks the server while the phone shows its own copy, then switches. */
+  private void startServerRetry(long delay) {
+    if (serverTarget.isEmpty() || retrying || inSetup || !APP_URL.equals(currentUrl)) return;
+    retrying = true;
+    retryHandler.postDelayed(serverCheck, delay);
+  }
+
+  private void stopServerRetry() {
+    retrying = false;
+    retryHandler.removeCallbacks(serverCheck);
+  }
+
+  private final Runnable serverCheck = new Runnable() {
+    @Override
+    public void run() {
+      final String target = serverTarget;
+      if (!retrying || target.isEmpty() || !APP_URL.equals(currentUrl)) {
+        retrying = false;
+        return;
+      }
+      new Thread(() -> {
+        boolean ok = serverHealthy(target);
+        runOnUiThread(() -> {
+          if (!retrying) return;
+          if (ok && APP_URL.equals(currentUrl) && target.equals(serverTarget)) {
+            retrying = false;
+            showWeb(target);
+          } else {
+            retryHandler.postDelayed(serverCheck, RETRY_MS);
+          }
+        });
+      }, "shelfscout-server-check").start();
+    }
+  };
+
+  private static boolean serverHealthy(String base) {
+    HttpURLConnection conn = null;
+    try {
+      conn = (HttpURLConnection) new URL(base + "/api/health").openConnection();
+      conn.setInstanceFollowRedirects(true);
+      conn.setConnectTimeout(4000);
+      conn.setReadTimeout(4000);
+      conn.setRequestProperty("User-Agent", "ShelfScout");
+      return conn.getResponseCode() == 200;
+    } catch (Exception e) {
+      return false;
+    } finally {
+      if (conn != null) conn.disconnect();
+    }
+  }
+
+  /** The server went away: keep working on this phone and keep checking. */
+  private void fallbackToDevice() {
+    if (APP_URL.equals(currentUrl)) return;
+    showWeb(APP_URL);
+    startServerRetry(4000);
+  }
+
+  private void useDeviceOnly() {
+    prefs.edit().remove(KEY_URL).putBoolean("auto_server", false).apply();
+    serverTarget = "";
+    stopServerRetry();
+    showWeb(APP_URL);
+  }
+
+  private void connectTo(String url) {
+    prefs.edit().putString(KEY_URL, url).putBoolean("auto_server", true).apply();
+    serverTarget = url;
+    stopServerRetry();
+    showWeb(url);
   }
 
   private int dp(int value) {
@@ -147,16 +252,16 @@ public class MainActivity extends Activity {
         .setTitle("ShelfScout")
         .setMessage("This app works on its own. You can also connect it to ShelfScout running on your computer.")
         .setItems(options, (dialog, which) -> {
-          String linked = prefs.getString(KEY_URL, "");
           if (which == 0) {
-            prefs.edit().remove(KEY_URL).apply();
+            stopServerRetry();
+            serverTarget = "";
             showSetup();
           } else if (which == 1) {
-            prefs.edit().remove(KEY_URL).apply();
-            showWeb(APP_URL);
+            useDeviceOnly();
           } else if (which == 2) {
             deleteTree(webRoot());
-            showWeb(linked.isEmpty() ? APP_URL : linked);
+            showWeb(serverTarget.isEmpty() ? APP_URL : serverTarget);
+            if (APP_URL.equals(currentUrl)) startServerRetry(1500);
           }
         })
         .show();
@@ -182,6 +287,8 @@ public class MainActivity extends Activity {
   /* ---------------- first run / change link ---------------- */
 
   private void showSetup() {
+    stopServerRetry();
+    inSetup = true;
     web = null;
 
     LinearLayout box = new LinearLayout(this);
@@ -224,10 +331,7 @@ public class MainActivity extends Activity {
     onDevice.setText("Use the library on this phone");
     onDevice.setTextColor(Color.parseColor("#F2EBDF"));
     onDevice.setBackgroundColor(Color.parseColor("#3A3226"));
-    onDevice.setOnClickListener(v -> {
-      prefs.edit().remove(KEY_URL).apply();
-      showWeb(APP_URL);
-    });
+    onDevice.setOnClickListener(v -> useDeviceOnly());
 
     connect.setOnClickListener(v -> {
       String url = normalize(input.getText().toString());
@@ -235,8 +339,7 @@ public class MainActivity extends Activity {
         error.setText("That doesn't look like a link - it should start with https://");
         return;
       }
-      prefs.edit().putString(KEY_URL, url).apply();
-      showWeb(url);
+      connectTo(url);
     });
 
     box.addView(title);
@@ -275,13 +378,15 @@ public class MainActivity extends Activity {
     if (url.isEmpty()) return null;
     if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://" + url;
     if (!url.contains(".")) return null;
-    return url;
+    return url.replaceAll("/+$", "");
   }
 
   /* ---------------- the app window ---------------- */
 
   private void showWeb(String url) {
     currentUrl = url;
+    inSetup = false;
+    if (!APP_URL.equals(url)) stopServerRetry();
     FrameLayout wrap = new FrameLayout(this);
 
     web = new WebView(this);
@@ -361,9 +466,8 @@ public class MainActivity extends Activity {
     onDevice.setTextColor(Color.parseColor("#F2EBDF"));
     onDevice.setBackgroundColor(Color.parseColor("#3A3226"));
     onDevice.setOnClickListener(v -> {
-      prefs.edit().remove(KEY_URL).apply();
       errorPanel.setVisibility(View.GONE);
-      showWeb(APP_URL);
+      useDeviceOnly();
     });
 
     Button relink = new Button(this);
@@ -371,7 +475,8 @@ public class MainActivity extends Activity {
     relink.setTextColor(Color.parseColor("#F2EBDF"));
     relink.setBackgroundColor(Color.parseColor("#262119"));
     relink.setOnClickListener(v -> {
-      prefs.edit().remove(KEY_URL).apply();
+      stopServerRetry();
+      serverTarget = "";
       showSetup();
     });
 
@@ -409,7 +514,22 @@ public class MainActivity extends Activity {
 
       @Override
       public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-        if (request.isForMainFrame()) errorPanel.setVisibility(View.VISIBLE);
+        if (!request.isForMainFrame()) return;
+        if (!APP_URL.equals(currentUrl) && !serverTarget.isEmpty()) {
+          fallbackToDevice();
+        } else {
+          errorPanel.setVisibility(View.VISIBLE);
+        }
+      }
+
+      // ngrok answers with an HTTP error page when the tunnel is down, which is
+      // not a network error, so treat it as the server being away too.
+      @Override
+      public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse response) {
+        if (!request.isForMainFrame()) return;
+        if (response.getStatusCode() >= 400 && !APP_URL.equals(currentUrl) && !serverTarget.isEmpty()) {
+          fallbackToDevice();
+        }
       }
     });
 
@@ -670,6 +790,25 @@ public class MainActivity extends Activity {
       fileCallback.onReceiveValue(result);
       fileCallback = null;
     }
+  }
+
+  @Override
+  protected void onResume() {
+    super.onResume();
+    // Coming back to the app: try the server again so Live returns by itself.
+    if (APP_URL.equals(currentUrl) && !serverTarget.isEmpty()) startServerRetry(800);
+  }
+
+  @Override
+  protected void onPause() {
+    stopServerRetry();
+    super.onPause();
+  }
+
+  @Override
+  protected void onDestroy() {
+    stopServerRetry();
+    super.onDestroy();
   }
 
   @Override
