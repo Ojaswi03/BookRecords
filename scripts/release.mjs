@@ -67,7 +67,7 @@ fs.cpSync(path.join(root, "public"), bundleDir, {
   recursive: true,
   filter: (src) => path.basename(src) !== "download",
 });
-fs.writeFileSync(path.join(bundleDir, ".webversion"), String(nextCode));
+fs.writeFileSync(path.join(bundleDir, "webversion.txt"), String(nextCode));
 fs.rmSync(zipPath, { force: true });
 execFileSync("zip", ["-qr", zipPath, "."], { cwd: bundleDir, stdio: "inherit" });
 

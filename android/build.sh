@@ -31,8 +31,9 @@ if [ -f "$ROOT/data/library.json" ]; then
   cp "$ROOT/data/library.json" "$ROOT/android/assets/www/seed.json"
 fi
 # Which app files are inside this build. The updater compares this number.
+# A normal filename, because aapt2 skips dotfiles in assets.
 VCODE="$(sed -n 's/.*android:versionCode="\([0-9]*\)".*/\1/p' "$ROOT/android/AndroidManifest.xml" | head -1)"
-printf '%s' "$VCODE" > "$ROOT/android/assets/www/.webversion"
+printf '%s' "$VCODE" > "$ROOT/android/assets/www/webversion.txt"
 
 # Reuse the PWA icon as the launcher icon.
 cp "$ROOT/public/icons/icon-512.png" "$ROOT/android/res/mipmap/ic_launcher.png"

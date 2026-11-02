@@ -412,10 +412,10 @@ public class MainActivity extends Activity {
     /** Which app files this phone has: downloaded bundle, else the APK copy. */
     @JavascriptInterface
     public int webVersion() {
-      int stored = versionFromFile(new File(webRoot(), ".webversion"));
+      int stored = versionFromFile(new File(webRoot(), "webversion.txt"));
       if (stored > 0) return stored;
       try {
-        return versionFromStream(getAssets().open("www/.webversion"));
+        return versionFromStream(getAssets().open("www/webversion.txt"));
       } catch (IOException e) {
         return 0;
       }
@@ -491,8 +491,8 @@ public class MainActivity extends Activity {
         deleteTree(root);
         if (!tmp.renameTo(root)) return "could not install";
 
-        // The bundle carries .webversion; fall back to the release number.
-        File marker = new File(root, ".webversion");
+        // The bundle carries webversion.txt; fall back to the release number.
+        File marker = new File(root, "webversion.txt");
         if (!marker.exists() && version > 0) {
           FileOutputStream fos = new FileOutputStream(marker);
           fos.write(String.valueOf(version).getBytes(StandardCharsets.UTF_8));
