@@ -30,7 +30,7 @@ Ports: 8420 is the app, 8421 is the loopback mirror ngrok forwards to, 4040 is n
 | `public/index.html`, `styles.css`, `app.js`, `offline.js`, `covercache.js`, `sw.js`, `manifest.webmanifest` | `npm run release` to publish | Browser and desktop app on reload. Phone app after tapping **Update app files**, no reinstall. |
 | `server.js` | Restart: `Ctrl+C`, then `npm start` | Every connected device. |
 | `public/icons/*` | `npm run icons`, then `npm run apk` | PWA and APK. |
-| `android/AndroidManifest.xml`, `android/src/**`, app name or icon | `npm run apk` (or `npm run release` to publish) | APK only. |
+| `android/AndroidManifest.xml`, `android/src/**`, `android/libs/**`, app name or icon | `npm run apk` (or `npm run release` to publish) | APK only. |
 | `scripts/release.mjs`, `README.md`, `LICENSE`, `TERMS.md`, `PRIVACY.md` | Nothing | Repository only. |
 | Books in the app | Nothing | Live on every device while the server runs. The APK picks up `data/library.json` the next time it is built. |
 
@@ -64,6 +64,8 @@ Users can also update by rebuilding from source: `npm run apk`, then install ove
 ## Data
 
 The server library is `data/library.json`. The phone app keeps its books in the WebView local storage. With no server, each device has its own shelf; with the server running, every device syncs live.
+
+The Android reading page, listening sentence, voice, style and speed are kept in the phone's private app storage. Deleting a book removes them. PDF text used for reading aloud stays on the phone.
 
 ## Backup and restore
 
@@ -103,6 +105,18 @@ The PDF reader remembers the page you stopped on for each book, and opens there 
 
 CSV backups include the reading status, rating, tags, notes and quotes, so the spreadsheet copy matches what the app shows.
 
+## Offline reading aloud
+
+The Android app can read a PDF aloud with the phone's own text-to-speech engine. It is free, works without internet, and needs no account or API key. Open a book with a PDF and tap **Listen**, from the book screen or from the PDF reader.
+
+The first tap asks for an installed English offline voice, a style and a speed. The styles are Normal, Gentle, Calm, Explaining and Aggressive. They change the pace and pitch of the phone's voice; they are not acted emotions like a paid cloud voice. Male and female labels appear only when the phone's voice names include that information. Android decides which voices are installed, and a missing voice can be added from **Voice settings**.
+
+Playback continues with the screen off and shows controls in the notification and on the lock screen. Headphones and Bluetooth are handled, and unplugging headphones pauses the book. The current page and sentence are saved, the PDF page turns as the audio moves, and the book resumes there next time.
+
+A long PDF can take a few seconds to prepare the first time. The app extracts the text layer on the phone. Image-only scans have no text layer and are not supported yet; OCR is the next step. Deleting a book stops playback and removes its saved listening position.
+
+`PdfBox-Android`, an Apache 2.0 library, extracts the text. The full notice is in [THIRD-PARTY.md](THIRD-PARTY.md).
+
 ## Refreshing
 
 Drag down from the top of the shelf and release to reload the app on a phone, without closing it.
@@ -114,5 +128,6 @@ This is paid, proprietary software. Reading the source does not grant the right 
 - [LICENSE](LICENSE) - what is and is not permitted
 - [TERMS.md](TERMS.md) - terms and conditions of use
 - [PRIVACY.md](PRIVACY.md) - what the app does with your data
+- [THIRD-PARTY.md](THIRD-PARTY.md) - the PDF text library and its Apache 2.0 license
 
 For a licence, contact the copyright holder listed in `LICENSE`.

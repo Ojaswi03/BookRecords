@@ -242,6 +242,24 @@ function readPDF(b) {
   openPdfViewer(b, url);
 }
 
+// The offline voice lives in the Android app. Browsers have no bridge, so the
+// Listen button simply stays hidden there.
+function hasListenBridge() {
+  const bridge = window.ShelfApp;
+  return Boolean(bridge && typeof bridge.listenPdf === "function");
+}
+
+function listenPDF(b) {
+  const url = pdfHref(b);
+  const bridge = window.ShelfApp;
+  if (!url) return;
+  if (bridge && typeof bridge.listenPdf === "function") {
+    bridge.listenPdf(url, b.id, b.title || "");
+    return;
+  }
+  toast("Install the latest app once to use offline reading aloud.", true);
+}
+
 async function findPDF(id) {
   const note = $("#pdfStatus");
   if (note) note.textContent = "Looking for a free copy...";
@@ -1070,8 +1088,10 @@ function renderBookView(b) {
 
       <div class="banner-actions">
         ${pdf ? `<button class="btn primary" data-read="${b.id}">${progress ? "Continue reading" : "Read PDF"}</button>` : ""}
+        ${pdf && hasListenBridge() ? `<button class="btn ghost" data-listen="${b.id}">Listen</button>` : ""}
         <button class="btn ${pdf ? "ghost" : "primary"}" data-edit="${b.id}">Edit info</button>
       </div>
+      ${pdf && hasListenBridge() ? `<p class="hint">Read aloud is offline and uses this phone's voice. It works when the PDF contains text; image-only scans need OCR, which is not included yet.</p>` : ""}
 
       ${b.notes ? `<section class="book-note"><h3>Notes</h3><p>${esc(b.notes)}</p></section>` : ""}
       ${b.quotes ? `<section class="book-note"><h3>Quotes</h3><p>${esc(b.quotes)}</p></section>` : ""}
@@ -1296,6 +1316,13 @@ $("#detailBody").addEventListener("click", async (e) => {
   if (read) {
     const book = state.books.find((x) => x.id === read.getAttribute("data-read"));
     if (book) readPDF(book);
+    return;
+  }
+
+  const listen = e.target.closest("[data-listen]");
+  if (listen) {
+    const book = state.books.find((x) => x.id === listen.getAttribute("data-listen"));
+    if (book) listenPDF(book);
     return;
   }
 

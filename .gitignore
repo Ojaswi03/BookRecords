@@ -32,5 +32,6 @@ public/download/*.aab
 .DS_Store
 Thumbs.db
 
-# Local feature tracker (never commit)
+# Local project context and feature tracker (never commit)
 FEATURES.local.md
+PROJECT.local.md

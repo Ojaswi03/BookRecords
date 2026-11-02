@@ -1080,6 +1080,7 @@ body {
  * ------------------------------------------------------------------ */
 
 .book-view { display: grid; gap: 16px; }
+.book-view .banner-actions { flex-wrap: wrap; }
 
 .book-hero {
   display: flex;

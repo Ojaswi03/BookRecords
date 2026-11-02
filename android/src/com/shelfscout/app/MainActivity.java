@@ -255,11 +255,16 @@ public class MainActivity extends Activity {
   }
 
   private void openPdfInApp(String url, String bookId, String title) {
+    openPdfInApp(url, bookId, title, false);
+  }
+
+  private void openPdfInApp(String url, String bookId, String title, boolean listen) {
     if (url == null || !(url.startsWith("http://") || url.startsWith("https://"))) return;
     Intent intent = new Intent(MainActivity.this, PdfActivity.class);
     intent.putExtra(PdfActivity.EXTRA_URL, url);
     intent.putExtra(PdfActivity.EXTRA_BOOK, bookId == null ? "" : bookId);
     intent.putExtra(PdfActivity.EXTRA_TITLE, title == null ? "" : title);
+    intent.putExtra(PdfActivity.EXTRA_LISTEN, listen);
     runOnUiThread(() -> startActivity(intent));
   }
 
@@ -543,6 +548,12 @@ public class MainActivity extends Activity {
       openPdfInApp(url, bookId, title);
     }
 
+    /** Opens the reader and asks for a voice, for the offline Listen button. */
+    @JavascriptInterface
+    public void listenPdf(String url, String bookId, String title) {
+      openPdfInApp(url, bookId, title, true);
+    }
+
     /** How far this book has been read, for the book screen and progress bar. */
     @JavascriptInterface
     public String readProgress(String bookId, String url) {
@@ -558,6 +569,7 @@ public class MainActivity extends Activity {
     /** Drops cached files that belong to a deleted book. */
     @JavascriptInterface
     public void deleteBookData(String bookId) {
+      AudioPlaybackService.stopForBook(MainActivity.this, bookId);
       PdfActivity.deleteCache(MainActivity.this, bookId);
     }
 

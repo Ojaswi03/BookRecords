@@ -23,6 +23,22 @@ WORK="$ROOT/android/build"
 rm -rf "$WORK" "$ROOT/android/assets"
 mkdir -p "$WORK/gen" "$WORK/classes" "$WORK/dex" "$ROOT/android/res/mipmap" "$ROOT/public/download" "$ROOT/android/assets"
 
+# PDF text extraction library, used by the offline reader. The AAR also has
+# font resources that PDFBox loads from assets.
+PDFBOX_AAR="$ROOT/android/libs/pdfbox-android-2.0.27.0.aar"
+if [ ! -f "$PDFBOX_AAR" ]; then
+  echo "Missing PDF text library: $PDFBOX_AAR" >&2
+  exit 1
+fi
+mkdir -p "$WORK/pdfbox"
+unzip -q "$PDFBOX_AAR" -d "$WORK/pdfbox"
+PDFBOX_JAR="$WORK/pdfbox/classes.jar"
+if [ ! -f "$PDFBOX_JAR" ]; then
+  echo "The PDF text library has no classes.jar" >&2
+  exit 1
+fi
+cp -R "$WORK/pdfbox/assets/." "$ROOT/android/assets/"
+
 # The whole web app ships inside the APK, so the phone needs no server.
 cp -R "$ROOT/public" "$ROOT/android/assets/www"
 rm -rf "$ROOT/android/assets/www/download"
@@ -53,12 +69,13 @@ echo "2/5  Linking resources"
 
 echo "3/5  Compiling Java + dexing"
 javac --release 8 \
-  -classpath "$PLATFORM" \
+  -classpath "$PLATFORM:$PDFBOX_JAR" \
   -d "$WORK/classes" \
   $(find "$WORK/gen" "$ROOT/android/src" -name '*.java')
 
 "$BT/d8" --lib "$PLATFORM" --min-api 24 --output "$WORK/dex" \
-  $(find "$WORK/classes" -name '*.class')
+  $(find "$WORK/classes" -name '*.class') \
+  "$PDFBOX_JAR"
 
 (cd "$WORK/dex" && zip -q "$WORK/base.apk" classes.dex)
 

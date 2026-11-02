@@ -1,26 +1,35 @@
 package com.shelfscout.app;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.ProgressDialog;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.pdf.PdfRenderer;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.Voice;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -29,7 +38,11 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Reads a book's free PDF without leaving ShelfScout.
@@ -42,6 +55,8 @@ public class PdfActivity extends Activity {
   public static final String EXTRA_URL = "url";
   public static final String EXTRA_TITLE = "title";
   public static final String EXTRA_BOOK = "book";
+  public static final String EXTRA_LISTEN = "listen";
+  private static final int NOTIFY_PERMISSION = 12;
 
   private PdfRenderer renderer;
   private ParcelFileDescriptor descriptor;
@@ -49,21 +64,54 @@ public class PdfActivity extends Activity {
   private TextView counter;
   private Button prev;
   private Button next;
+  private Button listen;
   private int pageIndex = 0;
   private Bitmap pageBitmap;
   private SharedPreferences reading;
+  private SharedPreferences audioPrefs;
   private String positionKey = "";
+  private String bookId = "";
+  private String url = "";
+  private String title = "";
+  private boolean listenPending = false;
+
+  private final AudioPlaybackService.Listener audioListener = new AudioPlaybackService.Listener() {
+    @Override
+    public void onProgress(int page, int total, String state) {
+      runOnUiThread(() -> {
+        if (listen != null) {
+          if ("playing".equals(state)) listen.setText("Listening");
+          else if ("paused".equals(state)) listen.setText("Paused");
+          else if ("preparing".equals(state)) listen.setText("Preparing...");
+          else listen.setText("Listen");
+        }
+        if (page > 0 && ("playing".equals(state) || "paused".equals(state)) && page - 1 != pageIndex) {
+          showPage(page - 1);
+        }
+      });
+    }
+
+    @Override
+    public void onError(String message) {
+      runOnUiThread(() -> {
+        if (listen != null) listen.setText("Listen");
+        Toast.makeText(PdfActivity.this, message, Toast.LENGTH_LONG).show();
+      });
+    }
+  };
 
   @Override
   protected void onCreate(Bundle state) {
     super.onCreate(state);
 
-    String url = getIntent().getStringExtra(EXTRA_URL);
-    String title = getIntent().getStringExtra(EXTRA_TITLE);
-    String bookId = getIntent().getStringExtra(EXTRA_BOOK);
+    url = value(getIntent().getStringExtra(EXTRA_URL));
+    title = value(getIntent().getStringExtra(EXTRA_TITLE));
+    bookId = value(getIntent().getStringExtra(EXTRA_BOOK));
+    listenPending = getIntent().getBooleanExtra(EXTRA_LISTEN, false);
 
     // Where this book was left last time. Saved on every page turn and on pause.
     reading = getSharedPreferences("shelfscout_reading", MODE_PRIVATE);
+    audioPrefs = getSharedPreferences("shelfscout_audio", MODE_PRIVATE);
     positionKey = positionKey(bookId, url);
 
     LinearLayout root = new LinearLayout(this);
@@ -115,10 +163,16 @@ public class PdfActivity extends Activity {
     foot.setPadding(dp(12), dp(8), dp(12), dp(12));
 
     prev = new Button(this);
-    prev.setText("Previous");
+    prev.setText("Prev");
     prev.setTextColor(Color.parseColor("#F2EBDF"));
     prev.setBackgroundColor(Color.parseColor("#262119"));
     prev.setOnClickListener(v -> showPage(pageIndex - 1));
+
+    listen = new Button(this);
+    listen.setText("Listen");
+    listen.setTextColor(Color.parseColor("#DCE8D8"));
+    listen.setBackgroundColor(Color.parseColor("#2B3A2C"));
+    listen.setOnClickListener(v -> showListenDialog());
 
     next = new Button(this);
     next.setText("Next");
@@ -127,6 +181,7 @@ public class PdfActivity extends Activity {
     next.setOnClickListener(v -> showPage(pageIndex + 1));
 
     foot.addView(prev);
+    foot.addView(listen);
     foot.addView(next);
     root.addView(foot);
 
@@ -182,6 +237,10 @@ public class PdfActivity extends Activity {
         reading.edit().putInt(positionKey + "_pages", count).apply();
         int saved = reading.getInt(positionKey, 0);
         showPage(Math.max(0, Math.min(saved, count - 1)));
+        if (listenPending) {
+          listenPending = false;
+          showListenDialog();
+        }
       });
     }).start();
   }
@@ -297,6 +356,213 @@ public class PdfActivity extends Activity {
         .show();
   }
 
+  /** Opens the voice and style picker for the free offline voice. */
+  private void showListenDialog() {
+    if (renderer == null) {
+      Toast.makeText(this, "The PDF is still opening.", Toast.LENGTH_SHORT).show();
+      return;
+    }
+    if (AudioPlaybackService.isActiveFor(bookId)) {
+      showActiveDialog();
+      return;
+    }
+
+    final ProgressDialog progress = ProgressDialog.show(
+        this, "Read aloud", "Checking the offline voices on this phone...", true, false);
+    final TextToSpeech[] picker = new TextToSpeech[1];
+    picker[0] = new TextToSpeech(this, status -> runOnUiThread(() -> {
+      progress.dismiss();
+      if (status != TextToSpeech.SUCCESS) {
+        showVoiceError("Text to speech is not available on this phone.");
+        return;
+      }
+      picker[0].setLanguage(Locale.ENGLISH);
+      List<Voice> voices = new ArrayList<>();
+      String defaultName = "";
+      try {
+        Voice defaultVoice = picker[0].getDefaultVoice();
+        if (defaultVoice != null) defaultName = defaultVoice.getName();
+        Set<Voice> all = picker[0].getVoices();
+        if (all != null) {
+          for (Voice voice : all) {
+            if (voice.getLocale() == null || !"en".equals(voice.getLocale().getLanguage())) continue;
+            if (voice.isNetworkConnectionRequired()) continue;
+            voices.add(voice);
+          }
+        }
+      } catch (Exception ignored) {
+        /* the engine may not expose its voices */
+      }
+      try { picker[0].shutdown(); } catch (Exception ignored) { /* already gone */ }
+      if (voices.isEmpty()) {
+        showVoiceError("No English offline voice is installed. Open the voice settings and download one.");
+        return;
+      }
+      showVoiceDialog(voices, defaultName);
+    }));
+  }
+
+  private void showActiveDialog() {
+    int page = reading.getInt(positionKey, pageIndex) + 1;
+    String state = AudioPlaybackService.stateFor(bookId);
+    String label = "preparing".equals(state) ? "preparing the text"
+        : ("paused".equals(state) ? "paused" : "playing");
+    new AlertDialog.Builder(this)
+        .setTitle("Reading aloud")
+        .setMessage("The offline voice is " + label + " on page " + page + ".")
+        .setPositiveButton("Stop", (dialog, which) -> stopListening())
+        .setNegativeButton("Close", null)
+        .show();
+  }
+
+  private void showVoiceDialog(List<Voice> voices, String defaultName) {
+    final String[] voiceLabels = new String[voices.size()];
+    int voiceIndex = 0;
+    String savedVoice = audioPrefs.getString("voice", "");
+    for (int i = 0; i < voices.size(); i++) {
+      Voice voice = voices.get(i);
+      voiceLabels[i] = voiceLabel(voice);
+      if (!savedVoice.isEmpty() && savedVoice.equals(voice.getName())) voiceIndex = i;
+      else if (savedVoice.isEmpty() && voiceIndex == 0 && defaultName.equals(voice.getName())) voiceIndex = i;
+    }
+
+    final String[] styleLabels = new String[5];
+    for (int i = 0; i < 5; i++) styleLabels[i] = AudioText.styleName(i);
+    final float[] speeds = {0.8f, 0.9f, 1.0f, 1.1f, 1.2f};
+    final String[] speedLabels = {"0.8x", "0.9x", "1.0x", "1.1x", "1.2x"};
+
+    LinearLayout box = new LinearLayout(this);
+    box.setOrientation(LinearLayout.VERTICAL);
+    box.setPadding(dp(20), dp(4), dp(20), 0);
+
+    TextView note = new TextView(this);
+    note.setText("Only offline English voices installed on this phone are listed. Male and female labels appear when the voice name includes one. Styles change pace and pitch; the free voice cannot act emotions like a paid cloud voice. This works for PDFs that contain text, not image-only scans.");
+    note.setTextColor(Color.parseColor("#A99C88"));
+    note.setTextSize(12);
+    note.setPadding(0, 0, 0, dp(10));
+    box.addView(note);
+
+    box.addView(label("Voice"));
+    Spinner voiceSpinner = spinner(voiceLabels, voiceIndex);
+    box.addView(voiceSpinner);
+
+    box.addView(label("Style"));
+    Spinner styleSpinner = spinner(styleLabels, Math.max(0, Math.min(4, audioPrefs.getInt("style", 0))));
+    box.addView(styleSpinner);
+
+    box.addView(label("Speed"));
+    Spinner speedSpinner = spinner(speedLabels, Math.max(0, Math.min(4, audioPrefs.getInt("speed", 2))));
+    box.addView(speedSpinner);
+
+    new AlertDialog.Builder(this)
+        .setTitle("Read aloud")
+        .setView(box)
+        .setPositiveButton("Start", (dialog, which) -> {
+          int vi = voiceSpinner.getSelectedItemPosition();
+          int si = styleSpinner.getSelectedItemPosition();
+          int spi = speedSpinner.getSelectedItemPosition();
+          Voice voice = voices.get(Math.max(0, Math.min(vi, voices.size() - 1)));
+          audioPrefs.edit()
+              .putString("voice", voice.getName())
+              .putInt("style", si)
+              .putInt("speed", spi)
+              .apply();
+          startListening(voice, si, speeds[spi]);
+        })
+        .setNegativeButton("Cancel", null)
+        .setNeutralButton("Voice settings", (dialog, which) -> openVoiceSettings())
+        .show();
+  }
+
+  private TextView label(String text) {
+    TextView view = new TextView(this);
+    view.setText(text);
+    view.setTextColor(Color.parseColor("#A99C88"));
+    view.setTextSize(11);
+    view.setPadding(0, dp(12), 0, dp(4));
+    return view;
+  }
+
+  private Spinner spinner(String[] values, int selected) {
+    Spinner spinner = new Spinner(this);
+    ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, values);
+    adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+    spinner.setAdapter(adapter);
+    spinner.setSelection(Math.max(0, Math.min(selected, values.length - 1)));
+    return spinner;
+  }
+
+  private String voiceLabel(Voice voice) {
+    String name = voice.getName();
+    String lower = name.toLowerCase(Locale.ROOT);
+    if (lower.contains("female")) return "Female - " + name;
+    if (lower.contains("male")) return "Male - " + name;
+    return name;
+  }
+
+  private void startListening(Voice voice, int style, float speed) {
+    if (renderer == null) return;
+    File file = cacheFile(this, bookId, url);
+    if (!file.isFile()) {
+      Toast.makeText(this, "The PDF is still downloading.", Toast.LENGTH_SHORT).show();
+      return;
+    }
+
+    if (Build.VERSION.SDK_INT >= 33
+        && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+      requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFY_PERMISSION);
+    }
+
+    Intent intent = new Intent(this, AudioPlaybackService.class)
+        .setAction(AudioPlaybackService.ACTION_START)
+        .putExtra(AudioPlaybackService.EXTRA_FILE, file.getAbsolutePath())
+        .putExtra(AudioPlaybackService.EXTRA_URL, url)
+        .putExtra(AudioPlaybackService.EXTRA_BOOK, bookId)
+        .putExtra(AudioPlaybackService.EXTRA_TITLE, title)
+        .putExtra(AudioPlaybackService.EXTRA_POSITION_KEY, positionKey)
+        .putExtra(AudioPlaybackService.EXTRA_START_PAGE, pageIndex + 1)
+        .putExtra(AudioPlaybackService.EXTRA_TOTAL_PAGES, renderer.getPageCount())
+        .putExtra(AudioPlaybackService.EXTRA_VOICE, voice.getName())
+        .putExtra(AudioPlaybackService.EXTRA_STYLE, style)
+        .putExtra(AudioPlaybackService.EXTRA_SPEED, speed);
+    if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent);
+    else startService(intent);
+    listen.setText("Preparing...");
+    Toast.makeText(this, "Preparing the text. Playback starts in a moment.", Toast.LENGTH_SHORT).show();
+  }
+
+  private void stopListening() {
+    Intent intent = new Intent(this, AudioPlaybackService.class);
+    intent.setAction(AudioPlaybackService.ACTION_STOP);
+    startService(intent);
+    if (listen != null) listen.setText("Listen");
+  }
+
+  private void showVoiceError(String message) {
+    new AlertDialog.Builder(this)
+        .setTitle("Read aloud")
+        .setMessage(message)
+        .setPositiveButton("Voice settings", (dialog, which) -> openVoiceSettings())
+        .setNegativeButton("Close", null)
+        .show();
+  }
+
+  private void openVoiceSettings() {
+    try {
+      startActivity(new Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA));
+    } catch (Exception first) {
+      try {
+        startActivity(new Intent("com.android.settings.TTS_SETTINGS"));
+      } catch (Exception second) {
+        Toast.makeText(this, "Open Android Settings, then Text-to-speech output.", Toast.LENGTH_LONG).show();
+      }
+    }
+  }
+
+  private String value(String text) {
+    return text == null ? "" : text;
+  }
+
   private void fail(String message) {
     counter.setText(message);
     prev.setEnabled(false);
@@ -311,7 +577,21 @@ public class PdfActivity extends Activity {
   }
 
   @Override
+  protected void onResume() {
+    super.onResume();
+    AudioPlaybackService.setListener(audioListener);
+    if (listen != null && AudioPlaybackService.isActiveFor(bookId)) {
+      String state = AudioPlaybackService.stateFor(bookId);
+      listen.setText("playing".equals(state) ? "Listening"
+          : ("preparing".equals(state) ? "Preparing..." : "Paused"));
+      int saved = reading.getInt(positionKey, pageIndex);
+      if (saved != pageIndex) showPage(saved);
+    }
+  }
+
+  @Override
   protected void onPause() {
+    AudioPlaybackService.setListener(null);
     if (reading != null && !positionKey.isEmpty() && renderer != null) {
       reading.edit().putInt(positionKey, pageIndex).apply();
     }
@@ -320,6 +600,7 @@ public class PdfActivity extends Activity {
 
   @Override
   protected void onDestroy() {
+    AudioPlaybackService.setListener(null);
     closeRenderer();
     if (pageBitmap != null) {
       pageBitmap.recycle();
