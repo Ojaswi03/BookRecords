@@ -35,13 +35,21 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * ShelfScout for Android.
@@ -88,18 +96,46 @@ public class MainActivity extends Activity {
     return Math.round(getResources().getDisplayMetrics().density * value);
   }
 
-  /* ---------------- bundled files ---------------- */
+  /* ---------------- bundled and updated files ---------------- */
+
+  /** Downloaded app files live here; the APK copy is the fallback. */
+  private File webRoot() {
+    return new File(getFilesDir(), "www");
+  }
 
   private WebResourceResponse asset(String path) {
     if (path.contains("..")) return notFound();
+    String rel = path.startsWith("/") ? path.substring(1) : path;
+
+    // A downloaded bundle wins over the copy inside the APK.
+    File file = new File(webRoot(), rel);
     try {
-      InputStream in = getAssets().open("www" + path);
-      String mime = mimeOf(path);
-      String encoding = mime.startsWith("text/") || mime.contains("javascript") || mime.contains("json") ? "utf-8" : null;
-      return new WebResourceResponse(mime, encoding, 200, "OK", null, in);
+      if (file.isFile()) return stream(file.getPath(), new FileInputStream(file));
+    } catch (Exception e) {
+      /* fall back to the bundled file */
+    }
+
+    try {
+      return stream(path, getAssets().open("www" + path));
     } catch (IOException e) {
       return notFound();
     }
+  }
+
+  // no-cache stops a freshly updated bundle from being served stale.
+  private WebResourceResponse stream(String path, InputStream in) {
+    String mime = mimeOf(path);
+    String encoding = mime.startsWith("text/") || mime.contains("javascript") || mime.contains("json") ? "utf-8" : null;
+    Map<String, String> headers = new HashMap<>();
+    headers.put("Cache-Control", "no-cache");
+    return new WebResourceResponse(mime, encoding, 200, "OK", headers, in);
+  }
+
+  private void deleteTree(File file) {
+    if (file == null || !file.exists()) return;
+    File[] children = file.listFiles();
+    if (children != null) for (File child : children) deleteTree(child);
+    file.delete();
   }
 
   private WebResourceResponse notFound() {
@@ -321,20 +357,26 @@ public class MainActivity extends Activity {
       }
     });
 
-    // Long-press anywhere to switch between the phone library and a computer.
+    // Long-press anywhere to switch between the phone library and a computer,
+    // or to roll back an update that went wrong.
     web.setOnLongClickListener(v -> {
+      String[] options = {"Connect to computer", "Use this phone", "Reset app files", "Cancel"};
       new AlertDialog.Builder(MainActivity.this)
           .setTitle("ShelfScout")
           .setMessage("This app works on its own. You can also connect it to ShelfScout running on your computer.")
-          .setPositiveButton("Connect to computer", (dialog, which) -> {
-            prefs.edit().remove(KEY_URL).apply();
-            showSetup();
+          .setItems(options, (dialog, which) -> {
+            String linked = prefs.getString(KEY_URL, "");
+            if (which == 0) {
+              prefs.edit().remove(KEY_URL).apply();
+              showSetup();
+            } else if (which == 1) {
+              prefs.edit().remove(KEY_URL).apply();
+              showWeb(APP_URL);
+            } else if (which == 2) {
+              deleteTree(webRoot());
+              showWeb(linked.isEmpty() ? APP_URL : linked);
+            }
           })
-          .setNeutralButton("Use this phone", (dialog, which) -> {
-            prefs.edit().remove(KEY_URL).apply();
-            showWeb(APP_URL);
-          })
-          .setNegativeButton("Cancel", null)
           .show();
       return true;
     });
@@ -364,6 +406,104 @@ public class MainActivity extends Activity {
         return info.versionCode;
       } catch (Exception e) {
         return 0;
+      }
+    }
+
+    /** Which app files this phone has: downloaded bundle, else the APK copy. */
+    @JavascriptInterface
+    public int webVersion() {
+      int stored = versionFromFile(new File(webRoot(), ".webversion"));
+      if (stored > 0) return stored;
+      try {
+        return versionFromStream(getAssets().open("www/.webversion"));
+      } catch (IOException e) {
+        return 0;
+      }
+    }
+
+    private int versionFromFile(File file) {
+      try {
+        return versionFromStream(new FileInputStream(file));
+      } catch (Exception e) {
+        return 0;
+      }
+    }
+
+    private int versionFromStream(InputStream in) {
+      try {
+        byte[] buf = new byte[24];
+        int n = in.read(buf);
+        in.close();
+        if (n <= 0) return 0;
+        return Integer.parseInt(new String(buf, 0, n, StandardCharsets.UTF_8).trim());
+      } catch (Exception e) {
+        return 0;
+      }
+    }
+
+    /** Downloads the current web bundle and swaps it in. Returns "ok" on success. */
+    @JavascriptInterface
+    public String installWebUpdate(String url, int version) {
+      if (url == null || !url.startsWith("https://github.com/Ojaswi03/BookRecords/releases/")) return "bad url";
+      File tmp = new File(getCacheDir(), "web-update");
+      deleteTree(tmp);
+      if (!tmp.mkdirs()) return "no storage";
+      HttpURLConnection conn = null;
+      try {
+        conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setInstanceFollowRedirects(true);
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(30000);
+        conn.setRequestProperty("User-Agent", "ShelfScout");
+        if (conn.getResponseCode() != 200) return "download " + conn.getResponseCode();
+
+        String base = tmp.getCanonicalPath() + File.separator;
+        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(conn.getInputStream()));
+        byte[] buf = new byte[8192];
+        long total = 0;
+        ZipEntry entry;
+        while ((entry = zip.getNextEntry()) != null) {
+          String name = entry.getName();
+          if (name.contains("..") || name.startsWith("/")) return "bad bundle";
+          File out = new File(tmp, name);
+          if (!out.getCanonicalPath().startsWith(base)) return "bad bundle";
+          if (entry.isDirectory()) {
+            out.mkdirs();
+            continue;
+          }
+          File parent = out.getParentFile();
+          if (parent != null) parent.mkdirs();
+          FileOutputStream fos = new FileOutputStream(out);
+          int n;
+          while ((n = zip.read(buf)) > 0) {
+            total += n;
+            if (total > 30L * 1024 * 1024) {
+              fos.close();
+              return "bundle too big";
+            }
+            fos.write(buf, 0, n);
+          }
+          fos.close();
+        }
+        zip.close();
+
+        File root = webRoot();
+        deleteTree(root);
+        if (!tmp.renameTo(root)) return "could not install";
+
+        // The bundle carries .webversion; fall back to the release number.
+        File marker = new File(root, ".webversion");
+        if (!marker.exists() && version > 0) {
+          FileOutputStream fos = new FileOutputStream(marker);
+          fos.write(String.valueOf(version).getBytes(StandardCharsets.UTF_8));
+          fos.close();
+        }
+        return "ok";
+      } catch (Exception e) {
+        return "failed";
+      } finally {
+        if (conn != null) conn.disconnect();
+        deleteTree(tmp);
       }
     }
 

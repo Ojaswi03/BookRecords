@@ -58,19 +58,32 @@ if (!fs.existsSync(apkPath)) {
   process.exit(1);
 }
 
+// The same app files, packed for the in-app updater. Installed phones download
+// this instead of a new APK, so the library and the page origin never change.
+const bundleDir = path.join(root, "android", "build", "web");
+const zipPath = path.join(root, "android", "build", "ShelfScout-web.zip");
+fs.rmSync(bundleDir, { recursive: true, force: true });
+fs.cpSync(path.join(root, "public"), bundleDir, {
+  recursive: true,
+  filter: (src) => path.basename(src) !== "download",
+});
+fs.writeFileSync(path.join(bundleDir, ".webversion"), String(nextCode));
+fs.rmSync(zipPath, { force: true });
+execFileSync("zip", ["-qr", zipPath, "."], { cwd: bundleDir, stdio: "inherit" });
+
 const tag = `v${nextCode}`;
 const title = `ShelfScout ${nextName}`;
-const body = notes || `ShelfScout ${nextName}. Install over the existing app.`;
+const body = notes || `ShelfScout ${nextName}. Open the app and tap Update app files - no reinstall needed.`;
 
 try {
-  execFileSync("gh", ["release", "create", tag, apkPath, "--title", title, "--notes", body], {
+  execFileSync("gh", ["release", "create", tag, apkPath, zipPath, "--title", title, "--notes", body], {
     stdio: "inherit",
     cwd: root,
   });
 } catch {
-  execFileSync("gh", ["release", "upload", tag, apkPath, "--clobber"], { stdio: "inherit", cwd: root });
+  execFileSync("gh", ["release", "upload", tag, apkPath, zipPath, "--clobber"], { stdio: "inherit", cwd: root });
 }
 
-console.log(`Published ${tag} with the APK. Installed apps will offer the update.`);
+console.log(`Published ${tag} with the APK and the web bundle. Installed apps will offer the update.`);
 console.log("Commit the version bump:");
 console.log(`  git add android/AndroidManifest.xml && git commit -m "Release ${nextName}"`);

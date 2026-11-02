@@ -27,7 +27,7 @@ Ports: 8420 is the app, 8421 is the loopback mirror ngrok forwards to, 4040 is n
 
 | You changed | Run | Where it appears |
 | --- | --- | --- |
-| `public/index.html`, `styles.css`, `app.js`, `offline.js`, `covercache.js`, `sw.js`, `manifest.webmanifest` | Nothing. For the standalone phone app: `npm run apk` | Browser and installed desktop app on reload. Phone app only after reinstalling the APK. |
+| `public/index.html`, `styles.css`, `app.js`, `offline.js`, `covercache.js`, `sw.js`, `manifest.webmanifest` | `npm run release` to publish | Browser and desktop app on reload. Phone app after tapping **Update app files**, no reinstall. |
 | `server.js` | Restart: `Ctrl+C`, then `npm start` | Every connected device. |
 | `public/icons/*` | `npm run icons`, then `npm run apk` | PWA and APK. |
 | `android/AndroidManifest.xml`, `android/src/**`, app name or icon | `npm run apk` (or `npm run release` to publish) | APK only. |
@@ -47,7 +47,9 @@ All of these are in `.gitignore`.
 
 ## GitHub releases and phone updates
 
-`npm run release` builds the APK and creates a GitHub release tagged `v<versionCode>` with the APK attached. Installed phone apps read `https://api.github.com/repos/Ojaswi03/BookRecords/releases/latest`, compare the tag with their own `versionCode`, and show **Update available** in the footer when a newer build exists. Tapping it opens the APK in the browser to install.
+`npm run release` builds the APK, packs the current web files into `ShelfScout-web.zip`, and publishes both on a GitHub release tagged `v<versionCode>`. Installed apps read `https://api.github.com/repos/Ojaswi03/BookRecords/releases/latest`, compare the tag with the web files they already have, and show **Update app files (vN)** in the footer. Tapping it downloads the bundle into the app's private storage and reloads: no APK install, and the library is untouched because the page origin never changes. If a download goes wrong, long-press the app and choose **Reset app files** to go back to the copy inside the APK.
+
+An APK install is only needed when the Java code, the manifest or the icon changes, or once on a build older than v6, whose updater only knows how to download an APK.
 
 The repository must be public for this to work, because the app has no GitHub token and private releases return 404. To make it public:
 
