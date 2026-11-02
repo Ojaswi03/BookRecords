@@ -1,0 +1,74 @@
+# ShelfScout (BookRecords)
+
+Home library for barcode-scanned books: genre sections, A-Z inside, sorted by the author's last name.
+Runs on your computer, in a browser, or entirely on an Android phone with no server.
+
+## Requirements
+
+- Node.js 18 or newer
+- For the Android app: JDK 17 or newer, Android SDK platform 34, build-tools 35, and `ANDROID_HOME` set
+- ngrok on your PATH only if you want the phone link
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `npm start` | Start the server. Prints the computer link and the phone link. |
+| `Ctrl+C` | Stop the server and its ngrok tunnel. |
+| `pkill -f "node server.js"` | Stop it when the terminal is gone. |
+| `npm run apk` | Rebuild `public/download/ShelfScout.apk` with the current web files. |
+| `npm run release` | Bump the Android version, rebuild the APK, and publish it to GitHub Releases. |
+| `npm run link -- <domain>` | Save a permanent ngrok domain (`npm run link -- --clear` to remove it). |
+| `npm run icons` | Regenerate the PWA and launcher icons from `scripts/make-icons.mjs`. |
+
+Ports: 8420 is the app, 8421 is the loopback mirror ngrok forwards to, 4040 is ngrok's own API.
+
+## What to run after a change
+
+| You changed | Run | Where it appears |
+| --- | --- | --- |
+| `public/index.html`, `styles.css`, `app.js`, `offline.js`, `sw.js`, `manifest.webmanifest` | Nothing. For the standalone phone app: `npm run apk` | Browser and installed desktop app on reload. Phone app only after reinstalling the APK. |
+| `server.js` | Restart: `Ctrl+C`, then `npm start` | Every connected device. |
+| `public/icons/*` | `npm run icons`, then `npm run apk` | PWA and APK. |
+| `android/AndroidManifest.xml`, `android/src/**`, app name or icon | `npm run apk` (or `npm run release` to publish) | APK only. |
+| `scripts/release.mjs`, `README.md`, `LICENSE`, `TERMS.md`, `PRIVACY.md` | Nothing | Repository only. |
+| Books in the app | Nothing | Live on every device while the server runs. The APK picks up `data/library.json` the next time it is built. |
+
+The Android version lives in `android/AndroidManifest.xml`. `npm run release` raises `versionCode` and `versionName` for you and tags the release `v<versionCode>`. Bump `versionCode` on every `npm run apk` that you install over an older copy.
+
+## Never commit
+
+- `data/library.json` and `data/settings.json` (your books and your phone link)
+- `certs/` (the HTTPS private key)
+- `*.keystore` (the APK signing key)
+- `public/download/*.apk` (build output, published as a release asset instead)
+
+All of these are in `.gitignore`.
+
+## GitHub releases and phone updates
+
+`npm run release` builds the APK and creates a GitHub release tagged `v<versionCode>` with the APK attached. Installed phone apps read `https://api.github.com/repos/Ojaswi03/BookRecords/releases/latest`, compare the tag with their own `versionCode`, and show **Update available** in the footer when a newer build exists. Tapping it opens the APK in the browser to install.
+
+The repository must be public for this to work, because the app has no GitHub token and private releases return 404. To make it public:
+
+```bash
+gh repo edit Ojaswi03/BookRecords --visibility public --accept-visibility-change-consequences
+```
+
+If you would rather keep the source private, put the release (the `.apk` file) in a separate public repository and change `REPO` at the top of `public/update.js`, then rebuild.
+
+Users can also update by rebuilding from source: `npm run apk`, then install over the existing app. The signing key must stay the same, or Android rejects the update and the old app has to be uninstalled first.
+
+## Data
+
+The server library is `data/library.json`. The phone app keeps its books in the WebView local storage. With no server, each device has its own shelf; with the server running, every device syncs live.
+
+## Licence and legal
+
+This is paid, proprietary software. Reading the source does not grant the right to use it.
+
+- [LICENSE](LICENSE) - what is and is not permitted
+- [TERMS.md](TERMS.md) - terms and conditions of use
+- [PRIVACY.md](PRIVACY.md) - what the app does with your data
+
+For a licence, contact the copyright holder listed in `LICENSE`.

@@ -1,0 +1,82 @@
+<!-- BEFORE PUBLISHING: replace the contact placeholder and the governing law
+     line with your real email and country. This document is a template, not
+     legal advice; have a lawyer review it before you sell licences. -->
+
+ShelfScout (BookRecords)
+Copyright (c) 2026 Ojaswi (GitHub: Ojaswi03). All rights reserved.
+
+PROPRIETARY SOFTWARE LICENCE - NOT OPEN SOURCE
+
+This software, including its source code, web interface, Android application,
+documentation and any associated files (the "Software"), is proprietary. No
+licence is granted by default. Making the source code viewable on GitHub, or
+sharing a copy of the Software, does not give anyone the right to use it.
+
+1. LICENCE REQUIRED FOR ANY USE
+
+   You may not use, run, install, copy, modify, merge, publish, distribute,
+   sublicense, sell, host, or create derivative works from the Software, in
+   whole or in part, without a separate written licence from the copyright
+   holder. This applies to personal, educational and commercial use alike.
+
+   Reading the source code for the purpose of evaluating a licence is allowed.
+   Cloning the repository does not grant a licence to run it.
+
+2. WHAT A PAID LICENCE PROVIDES
+
+   A paid licence is granted only by a written agreement with the copyright
+   holder, and only to the extent stated in that agreement. Typical terms are
+   one licence per person or per organisation, with the right to run the
+   Software for that licensee's own use for the licence period.
+
+   A licence is personal to the licensee, is not transferable, and does not
+   include the right to resell, rebrand, host for third parties, or sublicense
+   the Software unless the agreement says so in writing.
+
+3. NO TRADEMARK OR ATTRIBUTION RIGHTS
+
+   No right is granted to use the names "ShelfScout", "BookRecords", the
+   application icon, or any confusingly similar name or mark.
+
+4. THIRD-PARTY COMPONENTS
+
+   The Software bundles third-party libraries (ZXing and qrcode.js) that are
+   distributed under their own licences. Those licences continue to apply to
+   those components, and nothing in this document restricts rights you have
+   under them.
+
+5. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. THE COPYRIGHT
+   HOLDER DOES NOT WARRANT THAT THE SOFTWARE WILL BE ERROR FREE OR THAT IT WILL
+   NOT LOSE DATA.
+
+6. LIMITATION OF LIABILITY
+
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDER SHALL NOT BE
+   LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR PUNITIVE
+   DAMAGES, OR ANY LOSS OF DATA, PROFITS OR GOODWILL, ARISING OUT OF OR RELATED
+   TO THE SOFTWARE OR THIS LICENCE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+   DAMAGES. THE TOTAL LIABILITY OF THE COPYRIGHT HOLDER SHALL NOT EXCEED THE
+   AMOUNT PAID BY THE LICENSEE FOR THE LICENCE IN THE TWELVE MONTHS BEFORE THE
+   CLAIM.
+
+7. TERMINATION
+
+   Any breach of this licence terminates it immediately. On termination you must
+   stop using the Software and delete all copies in your possession.
+
+8. GOVERNING LAW
+
+   This licence is governed by the laws of the copyright holder's country of
+   residence, without regard to conflict of law rules. Courts in that
+   jurisdiction have exclusive jurisdiction over any dispute.
+
+9. CONTACT
+
+   Licensing enquiries: REPLACE-WITH-YOUR-EMAIL
+
+   If you have not paid for a licence and do not have a written agreement with
+   the copyright holder, you are not licensed to use this Software.

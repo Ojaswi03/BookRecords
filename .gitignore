@@ -1,0 +1,33 @@
+# dependencies
+node_modules/
+
+# personal data: never publish your library or your phone link
+data/library.json
+data/settings.json
+data/backups/
+
+# generated HTTPS certificate and its private key
+certs/
+
+# android build output
+android/build/
+android/assets/
+android/res/mipmap/
+
+# signing keys and their passwords
+*.keystore
+*.jks
+*.p12
+android/keystore.pass
+*.idsig
+
+# built packages: these are published as GitHub release assets instead
+public/download/*.apk
+public/download/*.aab
+
+# logs and local environment
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db

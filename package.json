@@ -1,0 +1,14 @@
+{
+  "name": "shelfscout",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scan book barcodes, look them up online, and see exactly where they belong on your alphabetized, genre-grouped shelf.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "link": "node scripts/set-link.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "apk": "bash android/build.sh",
+    "release": "node scripts/release.mjs"
+  }
+}

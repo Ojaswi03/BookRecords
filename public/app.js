@@ -1,0 +1,992 @@
+"use strict";
+
+const $ = (s) => document.querySelector(s);
+
+const state = {
+  books: [],
+  genres: [],
+  mode: "genre",
+  query: "",
+  highlightId: null,
+  banner: null, // { id, phase }
+  ranks: new Map(),
+  detailCover: null, // data URL of a cover uploaded in the detail editor
+};
+
+// State for the manual form's ISBN autofill.
+const manual = { cover: "", lookedUp: "", timer: 0 };
+
+/* ------------------------------------------------------------------ *
+ * Helpers
+ * ------------------------------------------------------------------ */
+
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"']/g, (c) => {
+    if (c === "&") return "&#38;";
+    if (c === "<") return "&#60;";
+    if (c === ">") return "&#62;";
+    if (c === '"') return "&#34;";
+    return "'";
+  });
+}
+
+// Identifies this tab, so live updates it triggered itself can be skipped.
+const clientId = (window.crypto && crypto.randomUUID)
+  ? crypto.randomUUID()
+  : `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+async function api(path, opts = {}) {
+  // No server reachable: the whole library runs on this device.
+  if (window.ShelfOffline && ShelfOffline.active) return ShelfOffline.handle(path, opts);
+
+  const headers = { ...(opts.headers || {}), "X-Client-Id": clientId };
+  let res;
+  try {
+    res = await fetch(path, { ...opts, headers });
+  } catch (err) {
+    // The server went away mid-session: keep working from the on-device books.
+    if (window.ShelfOffline) {
+      await ShelfOffline.init(true);
+      return ShelfOffline.handle(path, opts);
+    }
+    throw err;
+  }
+  let data = {};
+  try { data = await res.json(); } catch { /* no body */ }
+  if (!res.ok) {
+    const err = new Error(data.message || data.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+let toastTimer;
+function toast(msg, isError = false) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.toggle("error", isError);
+  t.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add("hidden"), 4500);
+}
+
+function lastName(name) {
+  const n = String(name || "").trim();
+  if (!n) return "unknown";
+  if (n.includes(",")) return n.split(",")[0].trim().toLowerCase();
+  const parts = n.split(/\s+/);
+  let last = parts[parts.length - 1].replace(/\.$/, "");
+  if (/^(jr|sr|ii|iii|iv)$/i.test(last) && parts.length > 1) last = parts[parts.length - 2].replace(/\.$/, "");
+  return last.toLowerCase();
+}
+
+// A-Z key: author's last name, then title.
+function sortKey(b) {
+  return lastName((b.authors && b.authors[0]) || "") + "\u0000" + (b.title || "").toLowerCase();
+}
+
+function sortedAll() {
+  return [...state.books].sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+}
+
+function normalizeGenre(g) {
+  return state.genres.includes(g) ? g : "Other";
+}
+
+function matches(b, q) {
+  if (!q) return true;
+  const hay = [b.title, (b.authors || []).join(" "), b.genre, b.isbn, (b.subjects || []).join(" ")]
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(q);
+}
+
+// The exact order books appear on screen, so placement advice matches the view.
+function displayOrder(all) {
+  if (state.mode !== "genre") return all;
+  const groups = new Map(state.genres.map((g) => [g, []]));
+  for (const b of all) {
+    const key = normalizeGenre(b.genre);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(b);
+  }
+  const used = [...groups.entries()].filter(([, list]) => list.length);
+  used.sort((a, b) => a[0].localeCompare(b[0]));
+  return used.flatMap(([, list]) => list);
+}
+
+function labelOf(b) {
+  const author = (b.authors && b.authors[0]) || "Unknown author";
+  return `${author} - ${b.title}`;
+}
+
+/* ------------------------------------------------------------------ *
+ * Rendering
+ * ------------------------------------------------------------------ */
+
+function rowHTML(b) {
+  const rank = state.ranks.get(b.id) ?? "";
+  const author = (b.authors || []).join(", ");
+  // Genre first: it's what the shelf is organised by, so it survives truncation
+  // on narrow phone rows.
+  const sub = [b.genre, b.year, b.isbn ? `ISBN ${b.isbn}` : ""].filter(Boolean).join(" · ");
+  const thumb = b.cover
+    ? `<img src="${esc(b.cover)}" alt="" loading="lazy" onerror="this.remove()">`
+    : "📖";
+  return `<article class="row" data-id="${b.id}">
+    <div class="idx">${rank}</div>
+    <div class="thumb">${thumb}</div>
+    <div class="meta">
+      <h3>${esc(b.title)}${(b.count || 1) > 1 ? ` <span class="count-badge">×${b.count}</span>` : ""}</h3>
+      <p class="author">${esc(author)}</p>
+      <p class="sub">${esc(sub)}</p>
+    </div>
+    <button class="del" data-del="${b.id}" aria-label="Remove ${esc(b.title)}" title="Remove">×</button>
+  </article>`;
+}
+
+function sectionHTML(title, books) {
+  return `<div class="section-head"><h2>${esc(title)}</h2><span>${books.length} book${books.length === 1 ? "" : "s"}</span></div>`
+    + books.map(rowHTML).join("");
+}
+
+function render() {
+  const all = sortedAll();
+  state.ranks = new Map(all.map((b, i) => [b.id, i + 1]));
+  const list = all.filter((b) => matches(b, state.query));
+
+  const genreCount = new Set(all.map((b) => normalizeGenre(b.genre))).size;
+  $("#stats").textContent = `${state.books.length} book${state.books.length === 1 ? "" : "s"}`
+    + (state.books.length ? ` · ${genreCount} genre${genreCount === 1 ? "" : "s"}` : "");
+
+  const lib = $("#library");
+  if (!list.length) {
+    lib.innerHTML = state.books.length
+      ? `<div class="empty"><h2>No matches</h2><p>Nothing on the shelf matches "${esc(state.query)}".</p></div>`
+      : `<div class="empty"><h2>Your shelf is empty</h2>
+           <p>Tap <strong>Scan barcode</strong> and point your camera at the barcode on the back of a book.<br>
+           ShelfScout looks it up online, shows the cover, and tells you exactly where it goes.</p></div>`;
+    renderBanner();
+    return;
+  }
+
+  let html = "";
+  if (state.mode === "genre") {
+    const groups = new Map();
+    for (const b of list) {
+      const g = normalizeGenre(b.genre);
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(b);
+    }
+    for (const g of [...groups.keys()].sort((a, b) => a.localeCompare(b))) {
+      html += sectionHTML(g, groups.get(g));
+    }
+  } else {
+    html += sectionHTML("A-Z by author", list);
+  }
+
+  lib.innerHTML = html;
+  applyHighlight();
+  renderBanner();
+}
+
+let highlightTimer;
+function applyHighlight() {
+  if (!state.highlightId) return;
+  const el = document.querySelector(`.row[data-id="${state.highlightId}"]`);
+  if (!el) return;
+  el.classList.add("flash");
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  const id = state.highlightId;
+  clearTimeout(highlightTimer);
+  highlightTimer = setTimeout(() => {
+    const node = document.querySelector(`.row[data-id="${id}"]`);
+    if (node) node.classList.remove("flash");
+    if (state.highlightId === id) state.highlightId = null;
+  }, 6000);
+}
+
+/* ------------------------------------------------------------------ *
+ * Placement banner: above / below / where in the stack
+ * ------------------------------------------------------------------ */
+
+/* Pill text for each post-scan state of the banner. */
+function pillText(phase, count) {
+  switch (phase) {
+    case "confirm": return `Already on your shelf · ${count} cop${count === 1 ? "y" : "ies"}`;
+    case "addedCopy": return `Right - you now have ${count} copies`;
+    case "ignored": return `Rescan ignored · count stays at ${count}`;
+    default: return "Found online · added";
+  }
+}
+
+function renderBanner() {
+  const wrap = $("#banner");
+  const b = state.banner ? state.books.find((x) => x.id === state.banner.id) : null;
+  if (!b) {
+    wrap.classList.add("hidden");
+    wrap.innerHTML = "";
+    return;
+  }
+
+  const all = sortedAll();
+  const order = displayOrder(all);
+  const idx = order.findIndex((x) => x.id === b.id);
+  const above = idx > 0 ? order[idx - 1] : null;
+  const below = idx >= 0 && idx < order.length - 1 ? order[idx + 1] : null;
+
+  const genre = normalizeGenre(b.genre);
+  const sectionBooks = all.filter((x) => normalizeGenre(x.genre) === genre);
+  const secIdx = sectionBooks.findIndex((x) => x.id === b.id) + 1;
+  const rank = state.ranks.get(b.id);
+  const phase = state.banner.phase || "added";
+  const count = b.count || 1;
+
+  const where = state.mode === "genre"
+    ? `${esc(genre)} section · A-Z inside`
+    : "Flat A-Z list";
+
+  wrap.innerHTML = `<div class="banner-card">
+    <button class="icon-btn" data-banner-close aria-label="Close">×</button>
+    <div class="banner-top">
+      ${b.cover
+        ? `<img class="cover" src="${esc(b.cover)}" alt="Cover of ${esc(b.title)}" onerror="this.remove()">`
+        : `<div class="cover"></div>`}
+      <div>
+        <span class="pill ${phase === "added" || phase === "addedCopy" ? "ok" : "warn"}">${esc(pillText(phase, count))}</span>
+        <h2>${esc(b.title)}</h2>
+        <p>${esc((b.authors || []).join(", "))}<span class="chip">${esc(genre)}</span>${count > 1 ? `<span class="chip copy">×${count} copies</span>` : ""}</p>
+      </div>
+    </div>
+
+    <div class="placement">
+      <div class="place-label">${where}</div>
+      <div class="stack">
+        <div class="nb">${above ? `▲ Put it <strong>under</strong> ${esc(labelOf(above))}` : "▲ Top of this section"}</div>
+        <div class="me">
+          <span class="marker">▼ THIS BOOK GOES HERE</span>
+          <span class="pos">slot ${secIdx} of ${sectionBooks.length} in ${esc(genre)} · #${rank} of ${state.books.length} overall</span>
+        </div>
+        <div class="nb">${below ? `▼ Put it <strong>above</strong> ${esc(labelOf(below))}` : "▼ Bottom of this section"}</div>
+      </div>
+    </div>
+
+    ${phase === "confirm" ? `
+    <div class="confirm-box">
+      <p><strong>Is that right?</strong> You already have ${count === 1 ? "this book" : `×${count} of this book`} on the shelf. Tap <strong>Yes</strong> only if you really own another copy - otherwise you rescanned it by mistake.</p>
+      <div class="banner-actions">
+        <button class="btn primary" data-add-copy>Yes - I have another copy</button>
+        <button class="btn ghost" data-not-copy>No - rescanned by mistake</button>
+      </div>
+    </div>` : `
+    ${phase === "addedCopy" ? `<p class="outcome ok">✓ Count increased to ${count} - the extra copy sits with the rest of this title.</p>` : ""}
+    ${phase === "ignored" ? `<p class="outcome">✓ Nothing changed - count left at ${count}.</p>` : ""}
+    <div class="banner-actions">
+      <button class="btn primary" data-scan-again>Scan next book</button>
+      <button class="btn ghost" data-banner-close>Done</button>
+    </div>`}
+  </div>`;
+  wrap.classList.remove("hidden");
+}
+
+/* ------------------------------------------------------------------ *
+ * Barcode scanning
+ * ------------------------------------------------------------------ */
+
+const scan = { active: false, stream: null, reader: null, timer: null, detector: null, busy: false, lastCode: "", lastAt: 0 };
+
+function scanError(msg) {
+  const el = $("#scanError");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+async function openScanner() {
+  $("#scanModal").classList.remove("hidden");
+  $("#scanError").classList.add("hidden");
+  $("#scanHint").textContent = "Hold the barcode on the back of the book inside the frame.";
+  const video = $("#video");
+
+  if ("BarcodeDetector" in window && !scan.detector) {
+    try {
+      const supported = await window.BarcodeDetector.getSupportedFormats();
+      const formats = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39"].filter((f) => supported.includes(f));
+      if (formats.length) scan.detector = new window.BarcodeDetector({ formats });
+    } catch {
+      scan.detector = null;
+    }
+  }
+
+  try {
+    scan.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
+    video.srcObject = scan.stream;
+    await video.play();
+    scan.active = true;
+
+    if (scan.detector) {
+      scan.timer = setInterval(async () => {
+        if (!scan.active || scan.busy) return;
+        try {
+          const codes = await scan.detector.detect(video);
+          if (codes && codes.length) onCode(codes[0].rawValue);
+        } catch { /* frame not ready yet */ }
+      }, 350);
+    } else if (window.ZXing) {
+      scan.reader = new window.ZXing.BrowserMultiFormatReader();
+      scan.reader.decodeFromConstraints(
+        { video: { facingMode: { ideal: "environment" } } },
+        video,
+        (result) => { if (result && scan.active) onCode(result.getText()); }
+      );
+    } else {
+      scanError("This browser can't decode barcodes - type the ISBN below instead.");
+    }
+  } catch (err) {
+    scanError(err && err.name === "NotAllowedError"
+      ? "Camera permission was blocked. Allow camera access for this site, or type the ISBN below."
+      : "Camera unavailable - type the ISBN below instead.");
+  }
+}
+
+function closeScanner() {
+  scan.active = false;
+  if (scan.timer) { clearInterval(scan.timer); scan.timer = null; }
+  if (scan.reader) { try { scan.reader.reset(); } catch { /* ignore */ } scan.reader = null; }
+  if (scan.stream) { scan.stream.getTracks().forEach((t) => t.stop()); scan.stream = null; }
+  const v = $("#video");
+  if (v) v.srcObject = null;
+  $("#scanModal").classList.add("hidden");
+}
+
+function onCode(raw) {
+  if (scan.busy) return;
+  const now = Date.now();
+  if (raw === scan.lastCode && now - scan.lastAt < 3000) return;
+  scan.lastCode = raw;
+  scan.lastAt = now;
+  submitISBN(raw);
+}
+
+async function submitISBN(raw) {
+  if (scan.busy) return;
+  scan.busy = true;
+  $("#scanHint").textContent = "Looking that book up online...";
+  try {
+    const data = await api("/api/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isbn: raw }),
+    });
+    closeScanner();
+    await reload(data.book.id, data.existed ? "confirm" : "added");
+  } catch (err) {
+    if (err.status === 404) {
+      closeScanner();
+      openManual({ isbn: String(raw).replace(/\D/g, "") });
+      toast("No online record for that barcode - add the details yourself.");
+    } else if (err.status === 400) {
+      scanError(err.message);
+    } else {
+      scanError(err.message || "Lookup failed. Try again.");
+    }
+  } finally {
+    scan.busy = false;
+    const hint = $("#scanHint");
+    if (hint) hint.textContent = "Hold the barcode on the back of the book inside the frame.";
+  }
+}
+
+async function reload(highlightId, phase) {
+  const data = await api("/api/books");
+  state.books = data.books;
+  state.highlightId = highlightId;
+  state.banner = { id: highlightId, phase: phase || "added" };
+  render();
+}
+
+/* ------------------------------------------------------------------ *
+ * Live sync - a scan on the phone redraws the shelf on the desktop
+ * ------------------------------------------------------------------ */
+
+function setLive(on, label) {
+  const badge = $("#liveBadge");
+  if (!badge) return;
+  badge.classList.toggle("on", on);
+  badge.classList.toggle("off", !on);
+  badge.textContent = label || (on ? "Live" : "Offline");
+}
+
+async function refreshFromServer() {
+  const data = await api("/api/books");
+  state.books = data.books || [];
+  if (state.detailId && !state.books.some((b) => b.id === state.detailId)) closeDetail();
+  if (state.banner && !state.books.some((b) => b.id === state.banner.id)) state.banner = null;
+  render();
+}
+
+function initLive() {
+  // With no server there is nothing to stream: the shelf is this device only.
+  if (window.ShelfOffline && ShelfOffline.active) {
+    setLive(false, "On this device");
+    return;
+  }
+  if (!("EventSource" in window)) return;
+  const stream = new EventSource(`/api/events?client=${encodeURIComponent(clientId)}`);
+
+  stream.addEventListener("open", () => setLive(true));
+  stream.addEventListener("error", () => setLive(false)); // EventSource retries on its own
+
+  stream.addEventListener("library", async (e) => {
+    let data = {};
+    try { data = JSON.parse(e.data); } catch { /* ignore malformed frame */ }
+    if (data.origin === clientId) return; // this device already applied the change
+    try {
+      await refreshFromServer();
+      if (data.reason === "added") toast(`"${data.book ? data.book.title : "A book"}" scanned on another device - shelf updated.`);
+      else if (data.reason === "removed") toast("A book was removed on another device.");
+      else toast("Library updated from another device.");
+    } catch { /* the stream reconnects and the next event retries */ }
+  });
+}
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  // The bundled phone app already has its files on the device.
+  if (location.host === "appassets.androidplatform.net") return;
+  // updateViaCache: "none" keeps the browser from serving an old sw.js from HTTP
+  // cache, so an updated app shell replaces the cached one on the next load.
+  navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).catch(() => { /* the offline shell is a bonus, not a requirement */ });
+}
+
+/* ------------------------------------------------------------------ *
+ * Manual entry
+ * ------------------------------------------------------------------ */
+
+function setLookupHint(text) {
+  const hint = $("#mLookupHint");
+  if (!hint) return;
+  hint.textContent = text || "";
+  hint.classList.toggle("hidden", !text);
+}
+
+function setManualPreview(book) {
+  const box = $("#mPreview");
+  if (!box) return;
+  if (!book) {
+    box.classList.add("hidden");
+    return;
+  }
+  const img = $("#mCover");
+  if (img) {
+    if (book.cover) {
+      img.src = book.cover;
+      img.classList.remove("hidden");
+    } else {
+      img.removeAttribute("src");
+      img.classList.add("hidden");
+    }
+  }
+  $("#mPreviewTitle").textContent = book.title || "";
+  const meta = [(book.authors || []).join(", "), book.genre, book.year].filter(Boolean).join(" · ");
+  $("#mPreviewMeta").textContent = meta;
+  box.classList.remove("hidden");
+}
+
+// A typed or scanned ISBN fills the form before the user submits it.
+async function lookupForManual(raw) {
+  const isbn = String(raw || "").replace(/[^0-9Xx]/g, "");
+  if (!isbn) {
+    manual.cover = "";
+    setLookupHint("");
+    setManualPreview(null);
+    return;
+  }
+  if (isbn.length !== 10 && isbn.length !== 13) {
+    manual.cover = "";
+    setLookupHint("An ISBN is 10 or 13 digits.");
+    setManualPreview(null);
+    return;
+  }
+  if (isbn === manual.lookedUp) return;
+  manual.lookedUp = isbn;
+  setLookupHint("Looking this ISBN up...");
+
+  try {
+    const data = await api(`/api/lookup?isbn=${encodeURIComponent(isbn)}`);
+    const rec = data.record || {};
+    if (!$("#mTitle").value.trim()) $("#mTitle").value = rec.title || "";
+    if (!$("#mAuthor").value.trim()) $("#mAuthor").value = (rec.authors || []).join(", ");
+    const genre = data.genre || rec.genre || "";
+    if (genre && !$("#mGenre").value) $("#mGenre").value = genre;
+    manual.cover = rec.cover || "";
+    setManualPreview({ ...rec, genre });
+    setLookupHint(`Found on ${rec.source || "the web"}. Change anything that is wrong.`);
+  } catch (err) {
+    manual.cover = "";
+    setManualPreview(null);
+    setLookupHint(
+      err.status === 404
+        ? "No record found for that ISBN. Fill in the details yourself."
+        : err.message || "Lookup failed. You can still add the book."
+    );
+  }
+}
+
+// Genre pickers: a fixed list plus a free-text option for a brand new genre.
+function wireGenrePicker(selectId, inputId) {
+  const sel = $(`#${selectId}`);
+  const inp = $(`#${inputId}`);
+  if (!sel || !inp) return;
+  sel.addEventListener("change", () => {
+    const isNew = sel.value === "__new";
+    inp.classList.toggle("hidden", !isNew);
+    if (isNew) inp.focus();
+  });
+}
+
+function genreValue(selectId, inputId) {
+  const sel = $(`#${selectId}`);
+  if (!sel) return "";
+  if (sel.value !== "__new") return sel.value;
+  const inp = $(`#${inputId}`);
+  return inp ? inp.value.trim().slice(0, 60) : "";
+}
+
+async function refreshGenres() {
+  try {
+    const data = await api("/api/genres");
+    if (!data || !Array.isArray(data.genres) || !data.genres.length) return;
+    state.genres = data.genres;
+    const m = $("#mGenre");
+    if (!m) return;
+    const current = m.value;
+    m.innerHTML = `<option value="">Detect from the book</option>`
+      + state.genres.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("")
+      + `<option value="__new">+ Add a new genre</option>`;
+    if ([...m.options].some((o) => o.value === current)) m.value = current;
+  } catch {
+    /* keep the list we already have */
+  }
+}
+
+function openManual(prefill = {}) {
+  $("#manualModal").classList.remove("hidden");
+  $("#mIsbn").value = prefill.isbn || "";
+  $("#mTitle").value = prefill.title || "";
+  $("#mAuthor").value = prefill.author || "";
+  $("#mGenre").value = "";
+  manual.cover = "";
+  manual.lookedUp = "";
+  setLookupHint("");
+  setManualPreview(null);
+  if (prefill.isbn) {
+    $("#mTitle").focus();
+    lookupForManual(prefill.isbn);
+  }
+}
+
+// Downscale an uploaded image so it fits in the library file.
+function toCoverDataURL(file, max = 700) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("read failed"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("not an image"));
+      img.onload = () => {
+        const scale = Math.min(1, max / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * QR code for phone access
+ * ------------------------------------------------------------------ */
+
+function initQR(urls) {
+  // The APK button does not depend on the QR code. On a phone the QR image is
+  // pointless, but the download button is the whole reason this panel exists -
+  // so reveal it even if the QR library or a phone URL is unavailable.
+  const apk = $("#apkLink");
+  const hasApk = Boolean(apk && urls && urls.apk);
+  if (hasApk) {
+    apk.href = urls.apk;
+    apk.classList.remove("hidden");
+  }
+
+  const url = urls && urls.phones && urls.phones[0];
+  if (url) {
+    const link = $("#qrLink");
+    if (link) link.textContent = url;
+    const note = $("#qrNote");
+    if (note) {
+      note.textContent = urls.permanent
+        ? "Permanent link - stays the same after every restart."
+        : "Temporary link - it changes when the server restarts. Run `npm run link` to make it permanent.";
+    }
+  }
+
+  try {
+    if (url && window.qrcode) {
+      const qr = window.qrcode(0, "M");
+      qr.addData(url);
+      qr.make();
+      let svg;
+      try { svg = qr.createSvgTag({ cellSize: 4, margin: 3, scalable: true }); }
+      catch { svg = qr.createSvgTag(4, 3); }
+      $("#qrCode").innerHTML = svg;
+    } else {
+      const box = $(".qr-img");
+      if (box) box.classList.add("hidden");
+    }
+  } catch {
+    /* QR is a convenience; the printed link still works */
+  }
+
+  const panel = $("#qrPanel");
+  if (panel && (url || hasApk)) panel.classList.remove("hidden");
+}
+
+/* ------------------------------------------------------------------ *
+ * Book detail / edit
+ * ------------------------------------------------------------------ */
+
+function openDetail(id) {
+  const b = state.books.find((x) => x.id === id);
+  if (!b) return;
+  state.detailId = id;
+
+  const all = sortedAll();
+  const order = displayOrder(all);
+  const idx = order.findIndex((x) => x.id === id);
+  const above = idx > 0 ? order[idx - 1] : null;
+  const below = idx >= 0 && idx < order.length - 1 ? order[idx + 1] : null;
+  const rank = state.ranks.get(id);
+  const genre = normalizeGenre(b.genre);
+  const sectionBooks = all.filter((x) => normalizeGenre(x.genre) === genre);
+  const secIdx = sectionBooks.findIndex((x) => x.id === id) + 1;
+
+  $("#detailBody").innerHTML = `
+    <div class="detail-top">
+      <div class="detail-cover-wrap" id="coverPick" role="button" tabindex="0" title="Click to change the cover">
+        <img class="detail-cover${b.cover ? "" : " hidden"}" id="detailCoverImg" alt="Cover of ${esc(b.title)}"
+             ${b.cover ? `src="${esc(b.cover)}"` : ""} onerror="this.classList.add('hidden')">
+        <div class="detail-cover${b.cover ? " hidden" : ""}" id="coverEmpty">📖</div>
+        <span class="cover-edit">Change cover</span>
+      </div>
+      <div class="detail-pos">
+        <p class="place-label">Shelf position</p>
+        <p><strong>#${rank}</strong> of ${state.books.length} overall</p>
+        <p>${esc(genre)} section · slot <strong>${secIdx}</strong> of ${sectionBooks.length}</p>
+        <p>${above ? `▲ Put it under ${esc(labelOf(above))}` : "▲ Top of this section"}</p>
+        <p>${below ? `▼ Put it above ${esc(labelOf(below))}` : "▼ Bottom of this section"}</p>
+      </div>
+    </div>
+
+    <form class="form" id="detailForm">
+      <label>Title <input id="dTitle" value="${esc(b.title)}" required></label>
+      <label>Author(s) <input id="dAuthor" value="${esc((b.authors || []).join(", "))}"></label>
+      <label>Genre
+        <select id="dGenre">${state.genres
+          .map((g) => `<option value="${esc(g)}"${g === genre ? " selected" : ""}>${esc(g)}</option>`)
+          .join("")}<option value="__new">+ Add a new genre</option></select>
+        <input id="dGenreNew" class="hidden" placeholder="Type the new genre" maxlength="60">
+      </label>
+      <div class="grid2">
+        <label>ISBN <input id="dIsbn" inputmode="numeric" value="${esc(b.isbn || "")}"></label>
+        <label>Year <input id="dYear" value="${esc(b.year || "")}"></label>
+        <label>Publisher <input id="dPublisher" value="${esc(b.publisher || "")}"></label>
+        <label>Pages <input id="dPages" inputmode="numeric" value="${b.pages ?? ""}"></label>
+        <label>Copies <input id="dCount" inputmode="numeric" min="1" value="${b.count || 1}"></label>
+      </div>
+      <label>Cover image URL
+        <input id="dCover" value="${b.cover && !String(b.cover).startsWith("data:") ? esc(b.cover) : ""}"
+               placeholder="${b.cover && String(b.cover).startsWith("data:") ? "Using the uploaded image" : "https://example.com/cover.jpg"}">
+      </label>
+      <input type="file" id="coverFile" accept="image/*" class="hidden">
+      <label>Subjects / topics <input id="dSubjects" value="${esc((b.subjects || []).join(", "))}"></label>
+      <p class="detail-meta">Source: ${esc(b.source || "-")} · Added ${esc(String(b.addedAt || "").slice(0, 10))}</p>
+      <div class="banner-actions">
+        <button class="btn primary" type="submit">Save changes</button>
+        <button class="btn ghost" type="button" data-detail-close>Close</button>
+      </div>
+    </form>`;
+
+  wireGenrePicker("dGenre", "dGenreNew");
+
+  $("#detailModal").classList.remove("hidden");
+
+  // Click the cover to upload a different image.
+  const picker = $("#coverPick");
+  const fileInput = $("#coverFile");
+  if (picker && fileInput) {
+    picker.addEventListener("click", () => fileInput.click());
+    picker.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        fileInput.click();
+      }
+    });
+    fileInput.addEventListener("change", async () => {
+      const chosen = fileInput.files && fileInput.files[0];
+      if (!chosen) return;
+      try {
+        const dataUrl = await toCoverDataURL(chosen);
+        state.detailCover = dataUrl;
+        const img = $("#detailCoverImg");
+        if (img) {
+          img.src = dataUrl;
+          img.classList.remove("hidden");
+        }
+        const empty = $("#coverEmpty");
+        if (empty) empty.classList.add("hidden");
+        const url = $("#dCover");
+        if (url) {
+          url.value = "";
+          url.placeholder = "Using the uploaded image";
+        }
+        toast("Cover updated. Tap Save changes to keep it.");
+      } catch {
+        toast("That image could not be read.", true);
+      }
+    });
+  }
+
+  const coverField = $("#dCover");
+  if (coverField) coverField.addEventListener("input", () => { state.detailCover = null; });
+}
+
+$("#detailBody").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = state.detailId;
+  if (!id) return;
+  try {
+    await api(`/api/books/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: $("#dTitle").value,
+        author: $("#dAuthor").value,
+        genre: genreValue("dGenre", "dGenreNew") || genre,
+        isbn: $("#dIsbn").value,
+        year: $("#dYear").value,
+        publisher: $("#dPublisher").value,
+        pages: $("#dPages").value,
+        count: $("#dCount").value,
+        cover: state.detailCover || $("#dCover").value,
+        subjects: $("#dSubjects").value.split(",").map((s) => s.trim()).filter(Boolean),
+      }),
+    });
+    state.books = (await api("/api/books")).books;
+    await refreshGenres();
+    render();
+    openDetail(id);
+    toast("Saved - shelf position recalculated.");
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+function closeDetail() {
+  state.detailId = null;
+  $("#detailModal").classList.add("hidden");
+}
+
+$("#detailClose").addEventListener("click", closeDetail);
+$("#detailBody").addEventListener("click", (e) => {
+  if (e.target.closest("[data-detail-close]")) closeDetail();
+});
+
+/* ------------------------------------------------------------------ *
+ * Wiring
+ * ------------------------------------------------------------------ */
+
+async function init() {
+  // Decide between the server library and the on-device library first.
+  if (window.ShelfOffline) await ShelfOffline.init();
+
+  const [books, genres, urls] = await Promise.all([
+    api("/api/books"),
+    api("/api/genres"),
+    api("/api/urls").catch(() => null),
+  ]);
+  state.books = books.books || [];
+  state.genres = genres.genres || [];
+
+  $("#mGenre").innerHTML = `<option value="">Detect from the book</option>`
+    + state.genres.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("")
+    + `<option value="__new">+ Add a new genre</option>`;
+  wireGenrePicker("mGenre", "mGenreNew");
+
+  render();
+  initQR(urls);
+  initLive();
+  registerServiceWorker();
+}
+
+$("#scanBtn").addEventListener("click", openScanner);
+$("#scanClose").addEventListener("click", closeScanner);
+
+$("#isbnForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const value = $("#isbnInput").value.trim();
+  if (!value) return;
+  $("#scanError").classList.add("hidden");
+  submitISBN(value);
+  $("#isbnInput").value = "";
+});
+
+$("#manualBtn").addEventListener("click", () => openManual());
+
+// Typing a valid ISBN fills the form, and a scan that found nothing also lands here.
+$("#mIsbn").addEventListener("input", (e) => {
+  clearTimeout(manual.timer);
+  const value = e.target.value;
+  manual.timer = setTimeout(() => lookupForManual(value), 650);
+});
+$("#mIsbn").addEventListener("blur", () => {
+  clearTimeout(manual.timer);
+  lookupForManual($("#mIsbn").value);
+});
+$("#manualClose").addEventListener("click", () => $("#manualModal").classList.add("hidden"));
+
+$("#manualForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const data = await api("/api/books", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        isbn: $("#mIsbn").value,
+        title: $("#mTitle").value,
+        author: $("#mAuthor").value,
+        genre: genreValue("mGenre", "mGenreNew"),
+        cover: manual.cover || undefined,
+      }),
+    });
+    $("#manualModal").classList.add("hidden");
+    $("#manualForm").reset();
+    manual.cover = "";
+    manual.lookedUp = "";
+    setLookupHint("");
+    setManualPreview(null);
+    await refreshGenres();
+    await reload(data.book.id, data.existed ? "confirm" : "added");
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$("#search").addEventListener("input", (e) => {
+  state.query = e.target.value.trim().toLowerCase();
+  render();
+});
+
+document.querySelectorAll(".seg button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".seg button").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    state.mode = btn.dataset.mode;
+    render();
+  });
+});
+
+$("#library").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-del]");
+  if (btn) {
+    const id = btn.getAttribute("data-del");
+    const book = state.books.find((b) => b.id === id);
+    if (!window.confirm(`Remove "${book ? book.title : "this book"}" from the library?`)) return;
+    try {
+      await api(`/api/books/${id}`, { method: "DELETE" });
+      state.books = (await api("/api/books")).books;
+      if (state.banner && state.banner.id === id) state.banner = null;
+      render();
+    } catch (err) {
+      toast(err.message, true);
+    }
+    return;
+  }
+
+  const row = e.target.closest(".row");
+  if (row) openDetail(row.getAttribute("data-id"));
+});
+
+$("#banner").addEventListener("click", async (e) => {
+  if (e.target.closest("[data-add-copy]")) {
+    const id = state.banner && state.banner.id;
+    if (!id) return;
+    try {
+      const data = await api(`/api/books/${id}/copy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delta: 1 }),
+      });
+      state.books = (await api("/api/books")).books;
+      state.banner = { id, phase: "addedCopy" };
+      render();
+      toast(`Right - count increased to ${data.book.count}.`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+    return;
+  }
+  if (e.target.closest("[data-not-copy]")) {
+    const id = state.banner && state.banner.id;
+    const book = state.books.find((x) => x.id === id);
+    state.banner = { id, phase: "ignored" };
+    render();
+    toast(`No problem - count left at ${book ? book.count || 1 : 1}.`);
+    return;
+  }
+  if (e.target.closest("[data-banner-close]")) {
+    state.banner = null;
+    renderBanner();
+  }
+  if (e.target.closest("[data-scan-again]")) {
+    state.banner = null;
+    renderBanner();
+    openScanner();
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  closeScanner();
+  $("#manualModal").classList.add("hidden");
+});
+
+let installPrompt = null;
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  const btn = $("#installBtn");
+  if (btn) btn.classList.remove("hidden");
+});
+
+const installBtn = $("#installBtn");
+if (installBtn) {
+  installBtn.addEventListener("click", async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => null);
+    installPrompt = null;
+    installBtn.classList.add("hidden");
+  });
+}
+
+window.addEventListener("appinstalled", () => toast("ShelfScout installed - open it from your home screen or desktop."));
+
+init().catch((err) => toast(err.message || "Could not load the library.", true));

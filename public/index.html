@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#14120f">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Scan a book's barcode, look it up online, and see exactly where it belongs on your shelf.">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ShelfScout">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <title>ShelfScout - scan, sort, shelve</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">📚</span>
+        <div class="brand-text">
+          <h1>ShelfScout</h1>
+          <p class="brand-status">
+            <span id="stats" aria-live="polite">Loading...</span>
+            <span id="liveBadge" class="live-badge off" title="Live sync across your devices">Offline</span>
+          </p>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="scanBtn" class="btn primary">Scan barcode</button>
+        <button id="manualBtn" class="btn ghost">Add manually</button>
+      </div>
+
+      <div class="controls">
+        <input id="search" type="search" placeholder="Search title, author, genre or ISBN" autocomplete="off" aria-label="Search your library">
+        <div class="seg" role="group" aria-label="Shelf order">
+          <button class="active" data-mode="genre">Genre sections</button>
+          <button data-mode="az">A-Z</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section class="qr-panel hidden" id="qrPanel" aria-label="Open on your phone">
+    <div class="qr-img" id="qrCode"></div>
+    <div class="qr-text">
+      <h2 class="qr-h-desktop">Open on your phone</h2>
+      <h2 class="qr-h-mobile">Get the ShelfScout app</h2>
+      <p class="qr-scan-hint">Scan this with your phone camera to open ShelfScout - then point it at any book barcode.</p>
+      <p class="qr-link" id="qrLink"></p>
+      <p class="qr-note" id="qrNote"></p>
+      <div class="qr-actions">
+        <button class="btn primary hidden" id="installBtn">Install app</button>
+        <a class="btn ghost hidden" id="apkLink" href="download/ShelfScout.apk" download>Download Android app (APK)</a>
+      </div>
+    </div>
+  </section>
+
+  <div class="banner-wrap hidden" id="banner"></div>
+
+  <main class="library" id="library"></main>
+
+  <footer class="foot">
+    <p>Genre sections · A-Z inside · sorted by the author's last name</p>
+    <p class="update-line hidden" id="updateLine"></p>
+  </footer>
+
+  <!-- Scan modal -->
+  <div class="modal hidden" id="scanModal" role="dialog" aria-modal="true" aria-label="Scan a barcode">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Scan the barcode</h2>
+        <button class="icon-btn" id="scanClose" aria-label="Close">×</button>
+      </div>
+
+      <div class="viewfinder" id="viewfinder">
+        <video id="video" playsinline muted autoplay></video>
+        <div class="reticle"></div>
+      </div>
+
+      <p class="hint" id="scanHint">Hold the barcode on the back of the book inside the frame.</p>
+      <p class="scan-error hidden" id="scanError"></p>
+
+      <form class="isbn-form" id="isbnForm">
+        <input id="isbnInput" inputmode="numeric" autocomplete="off" placeholder="Or type the ISBN, e.g. 9780553381689" aria-label="ISBN">
+        <button class="btn primary" type="submit">Add</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Manual modal -->
+  <div class="modal hidden" id="manualModal" role="dialog" aria-modal="true" aria-label="Add a book">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Add a book</h2>
+        <button class="icon-btn" id="manualClose" aria-label="Close">×</button>
+      </div>
+      <form class="form" id="manualForm">
+        <label>ISBN (optional)
+          <input id="mIsbn" inputmode="numeric" autocomplete="off" placeholder="9780553381689">
+        </label>
+        <p class="field-hint hidden" id="mLookupHint"></p>
+
+        <div class="manual-preview hidden" id="mPreview">
+          <img id="mCover" alt="" class="hidden">
+          <div class="manual-preview-text">
+            <strong id="mPreviewTitle"></strong>
+            <span id="mPreviewMeta"></span>
+          </div>
+        </div>
+
+        <label>Title
+          <input id="mTitle" required autocomplete="off" placeholder="Book title">
+        </label>
+        <label>Author
+          <input id="mAuthor" autocomplete="off" placeholder="First Last">
+        </label>
+        <label>Genre
+          <select id="mGenre"><option value="">Detect from the book</option></select>
+          <input id="mGenreNew" class="hidden" placeholder="Type the new genre" maxlength="60">
+        </label>
+        <button class="btn primary" type="submit">Add to library</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Book detail / edit modal -->
+  <div class="modal hidden" id="detailModal" role="dialog" aria-modal="true" aria-label="Book details">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Book details</h2>
+        <button class="icon-btn" id="detailClose" aria-label="Close">×</button>
+      </div>
+      <div id="detailBody"></div>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="vendor/qrcode.js"></script>
+  <script src="vendor/zxing.min.js"></script>
+  <script src="offline.js"></script>
+  <script src="app.js"></script>
+  <script src="update.js"></script>
+</body>
+</html>
